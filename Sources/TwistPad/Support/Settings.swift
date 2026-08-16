@@ -99,4 +99,15 @@ final class Settings: ObservableObject {
     func resetExclusionsToDefault() {
         excludedBundleIDs = Settings.defaultExclusions
     }
+
+    func resetAll() {
+        isEnabled = true
+        degreesForFullSweep = 70
+        activationThreshold = 8
+        invertDirection = false
+        detentCount = 16
+        hapticsEnabled = true
+        hudEnabled = true
+        excludedBundleIDs = Settings.defaultExclusions
+    }
 }

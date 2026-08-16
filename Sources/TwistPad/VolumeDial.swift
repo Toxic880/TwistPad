@@ -158,7 +158,14 @@ final class VolumeDial: ObservableObject, DialRecognizerDelegate {
     private func commit(_ value: Float) {
         volumeController.setVolume(value)
         volumeLevel = value
-        if isMuted && value > 0 { isMuted = false }
+
+        // Turning the dial up off zero unmutes, or someone who hit F10 twists up
+        // and still hears nothing. Only on the transition: doing it inside every
+        // write meant a second CoreAudio call per frame, 120 times a second.
+        if isMuted && value > 0 {
+            isMuted = false
+            volumeController.setMute(false)
+        }
     }
 
     private func isExcludedAppFrontmost() -> Bool {

@@ -2,96 +2,148 @@ import AppKit
 import SwiftUI
 
 struct SettingsView: View {
-    @ObservedObject var settings = Settings.shared
     @ObservedObject var dial: VolumeDial
 
     var body: some View {
         TabView {
-            FeelTab(settings: settings, dial: dial)
-                .tabItem { Label("Feel", systemImage: "dial.medium") }
-            AppsTab(settings: settings)
+            DialTab(dial: dial)
+                .tabItem { Label("Dial", systemImage: "dial.medium") }
+            AppsTab()
                 .tabItem { Label("Apps", systemImage: "square.grid.2x2") }
+            AboutTab()
+                .tabItem { Label("About", systemImage: "info.circle") }
         }
-        .frame(width: 440, height: 400)
+        .frame(width: 470, height: 560)
     }
 }
 
-private struct FeelTab: View {
-    @ObservedObject var settings: Settings
+// MARK: - Dial
+
+private struct DialTab: View {
+    @ObservedObject var settings = Settings.shared
     @ObservedObject var dial: VolumeDial
 
+    /// How far through a full sweep the current twist has got.
+    private var twistProgress: Double {
+        guard settings.degreesForFullSweep > 0 else { return 0 }
+        return min(abs(dial.liveTwistDegrees) / settings.degreesForFullSweep, 1)
+    }
+
     var body: some View {
-        Form {
-            Section {
-                Toggle("Twist two fingers to set the volume", isOn: $settings.isEnabled)
-                Toggle("Reverse direction", isOn: $settings.invertDirection)
-                    .help("By default, clockwise raises the volume.")
+        VStack(spacing: 0) {
+            liveHeader
+            Divider()
+            Form {
+                Section {
+                    Toggle("Twist two fingers to set the volume", isOn: $settings.isEnabled)
+                    Toggle("Reverse direction", isOn: $settings.invertDirection)
+                        .help("By default, clockwise raises the volume.")
+                }
+
+                Section("Sensitivity") {
+                    Slider(value: $settings.degreesForFullSweep, in: 30...180, step: 5) {
+                        Text("Full sweep")
+                    } minimumValueLabel: {
+                        Text("30°").font(.caption2)
+                    } maximumValueLabel: {
+                        Text("180°").font(.caption2)
+                    }
+                    LabeledContent("Silent to full",
+                                   value: "\(Int(settings.degreesForFullSweep))° of twist")
+
+                    Slider(value: $settings.activationThreshold, in: 4...30, step: 1) {
+                        Text("Dead zone")
+                    } minimumValueLabel: {
+                        Text("4°").font(.caption2)
+                    } maximumValueLabel: {
+                        Text("30°").font(.caption2)
+                    }
+                    LabeledContent("Ignored at the start",
+                                   value: "\(Int(settings.activationThreshold))°")
+                }
+
+                Section("Detents") {
+                    Picker("Steps", selection: $settings.detentCount) {
+                        Text("Smooth").tag(0)
+                        Text("8").tag(8)
+                        Text("16").tag(16)
+                        Text("32").tag(32)
+                    }
+                    .pickerStyle(.segmented)
+
+                    Toggle("Haptic click at each step", isOn: $settings.hapticsEnabled)
+                        .disabled(settings.detentCount == 0)
+                    Toggle("Show the dial on screen", isOn: $settings.hudEnabled)
+                }
+
+                Section {
+                    LabeledContent("Output", value: dial.outputDeviceName)
+                    if !dial.isSupported {
+                        Label("No trackpad found.", systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                    } else if !dial.canControlVolume {
+                        Label("This output has no volume control.",
+                              systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                    }
+                    Button("Reset to Defaults") { settings.resetAll() }
+                }
             }
-
-            Section("Sensitivity") {
-                Slider(value: $settings.degreesForFullSweep, in: 30...180, step: 5) {
-                    Text("Full sweep")
-                } minimumValueLabel: {
-                    Text("30°").font(.caption2)
-                } maximumValueLabel: {
-                    Text("180°").font(.caption2)
-                }
-                LabeledContent("Silent to full",
-                               value: "\(Int(settings.degreesForFullSweep))° of twist")
-
-                Slider(value: $settings.activationThreshold, in: 4...30, step: 1) {
-                    Text("Dead zone")
-                } minimumValueLabel: {
-                    Text("4°").font(.caption2)
-                } maximumValueLabel: {
-                    Text("30°").font(.caption2)
-                }
-                LabeledContent("Ignored at the start",
-                               value: "\(Int(settings.activationThreshold))°")
-
-                LabeledContent("Twisting now") {
-                    Text(dial.isEngaged ? "\(Int(abs(dial.liveTwistDegrees)))°" : "—")
-                        .monospacedDigit()
-                        .foregroundStyle(dial.isEngaged ? .primary : .secondary)
-                }
-            }
-
-            Section("Detents") {
-                Picker("Steps", selection: $settings.detentCount) {
-                    Text("Smooth").tag(0)
-                    Text("8").tag(8)
-                    Text("16").tag(16)
-                    Text("32").tag(32)
-                }
-                .pickerStyle(.segmented)
-
-                Toggle("Haptic click at each step", isOn: $settings.hapticsEnabled)
-                    .disabled(settings.detentCount == 0)
-                Toggle("Show the dial on screen", isOn: $settings.hudEnabled)
-            }
-
-            Section {
-                LabeledContent("Output", value: dial.outputDeviceName)
-                if !dial.isSupported {
-                    Label("No multitouch trackpad found.", systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
-                } else if !dial.canControlVolume {
-                    Label("This output has no software volume control.",
-                          systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
-                }
-            }
+            .formStyle(.grouped)
         }
-        .formStyle(.grouped)
+    }
+
+    /// A live dial you can twist against while the sliders are in front of you,
+    /// so sensitivity is something you feel rather than a number you guess at.
+    private var liveHeader: some View {
+        HStack(spacing: 20) {
+            DialGauge(level: Double(dial.volumeLevel),
+                      detents: settings.detentCount,
+                      lineWidth: 7) {
+                Image(systemName: speakerSymbolName(level: Double(dial.volumeLevel),
+                                                    isMuted: dial.isMuted))
+                    .font(.system(size: 17, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: 88, height: 88)
+
+            VStack(alignment: .leading, spacing: 6) {
+                if dial.isEngaged {
+                    Text("\(Int(abs(dial.liveTwistDegrees)))° of \(Int(settings.degreesForFullSweep))°")
+                        .font(.system(size: 17, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                    ProgressView(value: twistProgress)
+                        .frame(width: 190)
+                    Text("Keep going to reach full range.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Twist to test")
+                        .font(.system(size: 17, weight: .semibold, design: .rounded))
+                    ProgressView(value: 0)
+                        .frame(width: 190)
+                        .opacity(0.35)
+                    Text("Try it now with the sliders in view, then tune the feel.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 18)
     }
 }
 
+// MARK: - Apps
+
 private struct AppsTab: View {
-    @ObservedObject var settings: Settings
+    @ObservedObject var settings = Settings.shared
     @State private var selection: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             Text("The dial stays out of the way in these apps, which use two-finger "
                  + "rotation themselves.")
                 .font(.callout)
@@ -103,17 +155,23 @@ private struct AppsTab: View {
                     HStack(spacing: 8) {
                         Image(nsImage: Self.icon(for: bundleID))
                             .resizable()
-                            .frame(width: 16, height: 16)
+                            .frame(width: 17, height: 17)
                         Text(Self.displayName(for: bundleID))
+                        if !Self.isInstalled(bundleID) {
+                            Text("not installed")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
                         Spacer()
-                        Text(bundleID)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
                     }
                     .tag(bundleID)
                 }
             }
-            .border(Color.primary.opacity(0.1))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+            )
 
             HStack {
                 Button("Add App…") { addApp() }
@@ -128,7 +186,7 @@ private struct AppsTab: View {
                 Button("Restore Defaults") { settings.resetExclusionsToDefault() }
             }
         }
-        .padding()
+        .padding(20)
     }
 
     private func addApp() {
@@ -150,6 +208,10 @@ private struct AppsTab: View {
         NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
     }
 
+    private static func isInstalled(_ bundleID: String) -> Bool {
+        appURL(for: bundleID) != nil
+    }
+
     private static func displayName(for bundleID: String) -> String {
         guard let url = appURL(for: bundleID) else {
             return bundleID.components(separatedBy: ".").last ?? bundleID
@@ -164,5 +226,69 @@ private struct AppsTab: View {
                            accessibilityDescription: nil) ?? NSImage()
         }
         return NSWorkspace.shared.icon(forFile: url.path)
+    }
+}
+
+// MARK: - About
+
+private struct AboutTab: View {
+    @State private var opensAtLogin = LoginItem.isEnabled
+
+    private var version: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "1.0"
+        let build = info?["CFBundleVersion"] as? String ?? "1"
+        return "Version \(short) (\(build))"
+    }
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Spacer()
+
+            DialGauge(level: 0.68, detents: 16, lineWidth: 6) {
+                Image(systemName: "speaker.wave.2.fill")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: 78, height: 78)
+
+            VStack(spacing: 3) {
+                Text("TwistPad")
+                    .font(.system(size: 19, weight: .semibold))
+                Text(version)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Toggle("Open at login", isOn: $opensAtLogin)
+                .toggleStyle(.switch)
+                .onChange(of: opensAtLogin) { _, newValue in
+                    LoginItem.set(newValue)
+                    opensAtLogin = LoginItem.isEnabled
+                }
+                .disabled(!LoginItem.isAvailable)
+
+            HStack(spacing: 10) {
+                Button("Contact Support") {
+                    open("mailto:Support@traluco.com?subject=TwistPad")
+                }
+                Button("View on GitHub") {
+                    open("https://github.com/Toxic880/TwistPad")
+                }
+            }
+
+            Text("MIT licensed.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+        .padding(24)
+    }
+
+    private func open(_ string: String) {
+        guard let url = URL(string: string) else { return }
+        NSWorkspace.shared.open(url)
     }
 }

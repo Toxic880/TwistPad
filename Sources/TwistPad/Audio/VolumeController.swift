@@ -261,12 +261,6 @@ final class VolumeController {
             AudioObjectSetPropertyData(deviceID, &addr, 0, nil,
                                        UInt32(MemoryLayout<Float32>.size), &scalar)
         }
-
-        // Turning the dial up off zero should unmute, or someone who hit F10
-        // twists up and still hears nothing.
-        if value > 0.001 {
-            setMute(false)
-        }
     }
 
     func setMute(_ muted: Bool) {

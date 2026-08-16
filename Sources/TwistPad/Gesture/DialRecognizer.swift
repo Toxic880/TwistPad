@@ -58,6 +58,7 @@ final class DialRecognizer {
 
     private var state: State = .idle
     private var watchdog: Timer?
+    private var lastEventTime: TimeInterval = 0
 
     var isEngaged: Bool {
         if case .engaged = state { return true }
@@ -67,7 +68,10 @@ final class DialRecognizer {
     func handle(_ sample: TwistSample) {
         switch sample.phase {
         case .began:
-            reset(notify: false)
+            // Notify, not silent: if a previous gesture was still engaged when a
+            // new one starts, swallowing the disengage strands the dial "on" and
+            // the HUD never hides.
+            reset(notify: true)
             state = stanceIsPlausible(sample) ? .arming(accumulated: 0) : .rejected
             armWatchdog()
 
@@ -114,10 +118,17 @@ final class DialRecognizer {
         delegate?.dialDidEngage(self)
     }
 
+    /// One repeating timer for the life of the gesture, rather than a fresh
+    /// one-shot per frame: contacts arrive at up to 120 Hz, and allocating and
+    /// invalidating that many timers a second is pure waste.
     private func armWatchdog() {
-        watchdog?.invalidate()
-        watchdog = Timer.scheduledTimer(withTimeInterval: idleTimeout, repeats: false) { [weak self] _ in
-            self?.reset(notify: true)
+        lastEventTime = ProcessInfo.processInfo.systemUptime
+        guard watchdog == nil else { return }
+        watchdog = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            if ProcessInfo.processInfo.systemUptime - self.lastEventTime > self.idleTimeout {
+                self.reset(notify: true)
+            }
         }
     }
 

@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: StatusItemController?
     private var settingsWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
+    private var startAttempts = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = StatusItemController(dial: dial) { [weak self] in
@@ -18,13 +19,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         dial.onEngagementChanged = { [weak self] engaged in
-            guard let self, self.settings.hudEnabled else { return }
+            guard let self else { return }
             if engaged {
+                guard self.settings.hudEnabled else { return }
                 self.hud.update(level: self.dial.volumeLevel,
                                 detents: self.settings.detentCount,
                                 isMuted: self.dial.isMuted)
                 self.hud.show()
             } else {
+                // Unconditional: if the HUD was switched off mid-twist, guarding
+                // this would leave the panel on screen forever.
                 self.hud.scheduleHide()
             }
         }
@@ -44,8 +48,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] _ in self?.statusItem?.refresh() }
             .store(in: &cancellables)
 
-        if !dial.start() {
+        startGesture()
+    }
+
+    /// At login the app can launch before the HID stack has enumerated the
+    /// trackpad, so `MTDeviceCreateList` comes back empty and the gesture would
+    /// be dead until the user relaunched. Retry for a while before giving up.
+    /// This also picks up a Magic Trackpad that gets connected shortly after.
+    private func startGesture() {
+        if dial.start() { return }
+
+        startAttempts += 1
+        guard startAttempts < 15 else {
             presentUnsupportedAlert()
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            self?.startGesture()
         }
     }
 
