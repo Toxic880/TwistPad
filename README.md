@@ -8,17 +8,15 @@ It clicks as it turns. 16 haptic detents across the range, so it feels like a kn
 
 ## Install
 
-Grab the latest zip from [Releases](https://github.com/Toxic880/TwistPad/releases/latest), unzip, and drag TwistPad to Applications.
-
-macOS will block it the first time, because I haven't paid Apple to notarize it. You'll get "Apple could not verify TwistPad.app is free of malware". Hit Done, then go to **System Settings > Privacy & Security**, scroll to Security, and click **Open Anyway**. Or skip all that in Terminal:
-
 ```bash
-xattr -dr com.apple.quarantine /Applications/TwistPad.app
+brew install --cask Toxic880/tap/twistpad
 ```
 
-Right click then Open used to work for this. It doesn't on macOS 15 and later.
+Or grab the zip from [Releases](https://github.com/Toxic880/TwistPad/releases/latest), unzip it, and drag TwistPad to Applications.
 
-Building it yourself skips the whole problem, since apps you compile locally are never quarantined:
+Signed and notarized by Apple, so it just opens. No warnings, nothing to allow, no permissions to grant. It lives in the menu bar and needs macOS 14 or newer and a trackpad.
+
+Building it yourself works too:
 
 ```bash
 git clone https://github.com/Toxic880/TwistPad.git
@@ -26,8 +24,6 @@ cd TwistPad
 ./build.sh
 open TwistPad.app
 ```
-
-It lives in the menu bar. You need macOS 14 or newer and a trackpad. Nothing to grant it, no Accessibility prompt, it just runs.
 
 ## How it feels
 
