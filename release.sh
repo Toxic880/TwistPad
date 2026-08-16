@@ -56,25 +56,29 @@ git add -A
 git commit -q -m "Release $VERSION"
 git push -q origin main
 
+# Notes are built here rather than with --generate-notes, which conflicts with
+# --notes on some gh versions. A half-created release is painful to recover.
+NOTES="$(mktemp)"
+trap 'rm -f "$NOTES"' EXIT
+{
+	echo "Download \`$ZIP\`, unzip it, and drag TwistPad to Applications."
+	echo
+	echo "TwistPad is not notarized, so the **first launch needs a right click on"
+	echo "the app, then Open**. Double clicking will only show a warning."
+	echo
+	echo "## Changes"
+	echo
+	PREV_TAG="$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)"
+	if [[ -n "$PREV_TAG" ]]; then
+		git log --no-merges --pretty="- %s" "$PREV_TAG"..HEAD
+	else
+		git log --no-merges --pretty="- %s" -20
+	fi | grep -v "^- Release " || true
+} >"$NOTES"
+
 gh release create "v$VERSION" "$ZIP" \
 	--title "TwistPad $VERSION" \
-	--generate-notes \
-	--notes-start-tag "$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo '')" \
-	--notes "$(cat <<-EOF
-	Download \`$ZIP\`, unzip it, and drag TwistPad to Applications.
-
-	TwistPad is not notarized, so the first launch needs a right click on the
-	app then **Open**. Double clicking will just show a warning.
-	EOF
-	)" 2>/dev/null || gh release create "v$VERSION" "$ZIP" \
-	--title "TwistPad $VERSION" \
-	--notes "$(cat <<-EOF
-	Download \`$ZIP\`, unzip it, and drag TwistPad to Applications.
-
-	TwistPad is not notarized, so the first launch needs a right click on the
-	app then **Open**. Double clicking will just show a warning.
-	EOF
-	)"
+	--notes-file "$NOTES"
 
 echo "==> published https://github.com/Toxic880/TwistPad/releases/tag/v$VERSION"
 echo "    Existing installs will notice within 24 hours."
