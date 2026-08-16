@@ -30,8 +30,9 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BINARY" "$APP/Contents/MacOS/$APP_NAME"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 
-IDENTITY="${CODESIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null \
-	| grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)".*/\1/')}"
+ALL_IDENTITIES="$(security find-identity -v -p codesigning 2>/dev/null || true)"
+DETECTED="$(printf '%s\n' "$ALL_IDENTITIES" | sed -n 's/.*"\(Developer ID Application[^"]*\)".*/\1/p' | head -1)"
+IDENTITY="${CODESIGN_IDENTITY:-$DETECTED}"
 
 if [[ -n "$IDENTITY" ]]; then
 	echo "==> Signing: $IDENTITY"

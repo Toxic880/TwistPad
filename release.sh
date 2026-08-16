@@ -30,6 +30,20 @@ if ! [[ "$VERSION" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then
 fi
 
 PLIST="Resources/Info.plist"
+PLIST_BUMPED=0
+RELEASE_COMMITTED=0
+NOTES=""
+
+cleanup() {
+	[[ -n "$NOTES" ]] && rm -f "$NOTES"
+	if [[ "$PLIST_BUMPED" == "1" && "$RELEASE_COMMITTED" != "1" ]]; then
+		git checkout -- "$PLIST" 2>/dev/null || true
+		echo "!!  release did not complete; restored $PLIST" >&2
+	fi
+	return 0
+}
+trap cleanup EXIT
+
 CURRENT="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST")"
 
 if [[ "$CURRENT" == "$VERSION" ]]; then
@@ -74,11 +88,14 @@ echo "==> $CURRENT -> $VERSION"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$PLIST"
 BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST")"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $((BUILD + 1))" "$PLIST"
+PLIST_BUMPED=1
 
 ./build.sh
 
-if ! codesign -dv --verbose=4 "$APP" 2>&1 | grep -q "Developer ID Application"; then
+SIGN_INFO="$(codesign -dv --verbose=4 "$APP" 2>&1 || true)"
+if [[ "$SIGN_INFO" != *"Developer ID Application"* ]]; then
 	echo "error: $APP is not signed with a Developer ID. Notarization will fail." >&2
+	echo "$SIGN_INFO" | head -5 >&2
 	exit 1
 fi
 
@@ -109,7 +126,6 @@ SHA="$(shasum -a 256 "$ZIP" | cut -d' ' -f1)"
 echo "==> packaged $ZIP ($(du -h "$ZIP" | cut -f1), sha256 ${SHA:0:16}…)"
 
 NOTES="$(mktemp)"
-trap 'rm -f "$NOTES"' EXIT
 {
 	echo "Download \`$ZIP\`, unzip it, and drag TwistPad to Applications."
 	echo
@@ -147,6 +163,7 @@ trap 'rm -f "$NOTES"' EXIT
 git add -A
 git commit -q -m "Release $VERSION"
 git push -q origin main
+RELEASE_COMMITTED=1
 
 gh release create "v$VERSION" "$ZIP" \
 	--title "TwistPad $VERSION" \
