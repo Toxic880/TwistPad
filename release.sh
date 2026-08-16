@@ -47,16 +47,25 @@ if git rev-parse "v$VERSION" >/dev/null 2>&1; then
 	exit 1
 fi
 
-if ! xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1; then
+NOTARIZE=1
+if [[ "${ALLOW_UNNOTARIZED:-0}" == "1" ]]; then
+	NOTARIZE=0
+	echo "!!  ALLOW_UNNOTARIZED set: shipping without notarization."
+	echo "!!  Users will hit the Gatekeeper warning on first launch."
+elif ! xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1; then
 	cat >&2 <<-EOF
 	error: no notarization credentials for profile '$NOTARY_PROFILE'.
 
-	Store them once with:
+	Store them once with your real Apple ID (the one on your Developer
+	account), not a placeholder:
 	  xcrun notarytool store-credentials "$NOTARY_PROFILE" \\
-	      --apple-id "<your-apple-id>" --team-id J4C774VXXC
+	      --apple-id "you@example.com" --team-id J4C774VXXC
 
-	It asks for an app-specific password, which you create at
-	appleid.apple.com under Sign-In and Security. Not your Apple password.
+	It asks for an app-specific password, created at appleid.apple.com under
+	Sign-In and Security. Your normal Apple password will not work.
+
+	To ship anyway, without notarization:
+	  ALLOW_UNNOTARIZED=1 ./release.sh $VERSION
 	EOF
 	exit 1
 fi
@@ -78,23 +87,26 @@ rm -f "$ZIP"
 # ditto, not zip: it preserves the bundle structure and the signature.
 ditto -c -k --keepParent "$APP" "$ZIP"
 
-echo "==> Notarizing (a few minutes)"
-xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
+if [[ "$NOTARIZE" == "1" ]]; then
+	echo "==> Notarizing (a few minutes)"
+	xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
 
-# Staple the ticket into the bundle so it validates offline, then re-zip. The
-# submitted archive does not contain the ticket; only the stapled app does.
-echo "==> Stapling"
-xcrun stapler staple "$APP"
-xcrun stapler validate "$APP"
+	# Staple the ticket into the bundle so it validates offline, then re-zip.
+	# The submitted archive has no ticket; only the stapled app does.
+	echo "==> Stapling"
+	xcrun stapler staple "$APP"
+	xcrun stapler validate "$APP"
 
-rm -f "$ZIP"
-ditto -c -k --keepParent "$APP" "$ZIP"
+	rm -f "$ZIP"
+	ditto -c -k --keepParent "$APP" "$ZIP"
+
+	# Prove Gatekeeper accepts it before anyone downloads it.
+	echo "==> Gatekeeper check"
+	spctl --assess --type execute --verbose=2 "$APP"
+fi
+
 SHA="$(shasum -a 256 "$ZIP" | cut -d' ' -f1)"
 echo "==> packaged $ZIP ($(du -h "$ZIP" | cut -f1), sha256 ${SHA:0:16}…)"
-
-# Prove Gatekeeper accepts it before anyone downloads it.
-echo "==> Gatekeeper check"
-spctl --assess --type execute --verbose=2 "$APP"
 
 NOTES="$(mktemp)"
 trap 'rm -f "$NOTES"' EXIT
@@ -107,7 +119,20 @@ trap 'rm -f "$NOTES"' EXIT
 	echo "brew install --cask Toxic880/tap/twistpad"
 	echo '```'
 	echo
-	echo "Signed and notarized by Apple, so it opens without any warnings."
+	if [[ "$NOTARIZE" == "1" ]]; then
+		echo "Signed and notarized by Apple, so it opens without any warnings."
+	else
+		echo "### macOS will block it on first launch"
+		echo
+		echo "This build is signed but not notarized, so you will see *\"Apple could"
+		echo "not verify TwistPad.app is free of malware\"*. Click **Done**, then open"
+		echo "**System Settings > Privacy & Security**, scroll to Security, and click"
+		echo "**Open Anyway**. Or in Terminal:"
+		echo
+		echo '```bash'
+		echo "xattr -dr com.apple.quarantine /Applications/TwistPad.app"
+		echo '```'
+	fi
 	echo
 	echo "## Changes"
 	echo
