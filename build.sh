@@ -1,6 +1,10 @@
 #!/bin/bash
 # Builds TwistPad.app. SwiftPM only emits a bare binary, but the app needs a real
 # bundle for LSUIElement, a bundle identifier, and a signature for SMAppService.
+#
+# Signs with a Developer ID if one is available, otherwise ad-hoc so that anyone
+# can still build from source. Release builds need the real identity, since
+# notarization will not accept an ad-hoc signature.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -26,8 +30,21 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BINARY" "$APP/Contents/MacOS/$APP_NAME"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 
-echo "==> Signing (ad-hoc)"
-codesign --force --sign - "$APP"
+IDENTITY="${CODESIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null \
+	| grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)".*/\1/')}"
+
+if [[ -n "$IDENTITY" ]]; then
+	echo "==> Signing: $IDENTITY"
+	# Hardened runtime is required for notarization. TwistPad dlopens
+	# MultitouchSupport, which is Apple-signed, so library validation permits it
+	# without needing an exemption entitlement.
+	codesign --force --options runtime --timestamp \
+		--sign "$IDENTITY" "$APP"
+	codesign --verify --strict --verbose=1 "$APP"
+else
+	echo "==> Signing (ad-hoc, no Developer ID found)"
+	codesign --force --sign - "$APP"
+fi
 
 echo "==> Built $(pwd)/$APP"
 echo "    Run it with:  open $APP"
