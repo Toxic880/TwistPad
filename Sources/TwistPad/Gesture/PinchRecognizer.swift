@@ -25,12 +25,15 @@ final class PinchRecognizer {
     /// skips one track and only a big deliberate one skips several.
     var repeatDistance: Double = 14
 
-    /// Spread change per millimetre the hand travels. Set low on purpose: in a
-    /// real pinch only the thumb moves much, which drags the centroid by about a
-    /// third of the thumb's travel, so a genuine pinch scores nearer 1.5 than
-    /// infinity. A swipe still scores near zero because its spread barely
-    /// changes, and the activation distance alone rejects most swipes anyway.
-    var minSpreadPerTravel: Double = 0.45
+    /// Spread change per millimetre the hand travels. A real pinch scores around
+    /// 1.5 to 2.5; a scroll anchored by a resting palm scores about 0.75,
+    /// because the palm holds the centroid still while the fingers run away.
+    var minSpreadPerTravel: Double = 1.1
+
+    /// Absolute travel allowed while arming, mm. The twist has had one of these
+    /// all along; the pinch did not, and the ratio alone let palm-anchored
+    /// scrolls through. A pinch arrives within a few millimetres.
+    var maxDriftWhileArming: Double = 9
 
     /// Spread settles faster than rotation does, and eating frames off the front
     /// of a quick pinch loses the movement that should have triggered it.
@@ -96,17 +99,29 @@ final class PinchRecognizer {
     }
 
     private func evaluateArming(_ accumulated: Double, _ sample: TwistSample) {
+        if sample.centroidDrift > maxDriftWhileArming {
+            GestureLog.record(String(format: "pinch rejected: drift %.1fmm (max %.0f)",
+                                     sample.centroidDrift, maxDriftWhileArming))
+            state = .rejected
+            return
+        }
+
         guard abs(accumulated) >= activationDistance else { return }
 
         // Floor the divisor so a pinch that stays perfectly still does not
         // divide by something near zero.
         let rate = abs(accumulated) / max(sample.centroidDrift, 0.5)
         guard rate >= minSpreadPerTravel else {
-            // Travelling far without changing spread: that is a swipe.
+            // Travelling far without changing spread much: a swipe, or a scroll
+            // anchored by something that is not moving.
+            GestureLog.record(String(format: "pinch rejected: rate %.2f (min %.2f) spread=%.1fmm drift=%.1fmm",
+                                     rate, minSpreadPerTravel, accumulated, sample.centroidDrift))
             state = .rejected
             return
         }
 
+        GestureLog.record(String(format: "pinch ENGAGED: spread=%.1fmm drift=%.1fmm rate=%.2f",
+                                 accumulated, sample.centroidDrift, rate))
         let direction: Double = accumulated > 0 ? 1 : -1
         state = .engaged(direction: direction, sinceStep: 0)
         delegate?.pinchDidStep(self, expanding: direction > 0)

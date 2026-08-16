@@ -22,23 +22,18 @@ struct SettingsView: View {
 
 private struct DialTab: View {
     @ObservedObject var settings = Settings.shared
-    @ObservedObject var dial: VolumeDial
+    let dial: VolumeDial
 
     /// Re-read when the window comes forward, so toggling the system setting in
     /// another app is reflected without relaunching.
     @State private var hapticStatus = Haptics.availability
     @State private var copiedDiagnostics = false
     @State private var hasAccessibility = MediaKeys.hasPermission
-
-    /// How far through a full sweep the current twist has got.
-    private var twistProgress: Double {
-        guard settings.degreesForFullSweep > 0 else { return 0 }
-        return min(abs(dial.liveTwistDegrees) / settings.degreesForFullSweep, 1)
-    }
+    @State private var otherCopies = AppCopies.others
 
     var body: some View {
         VStack(spacing: 0) {
-            liveHeader
+            LiveDialHeader(dial: dial)
             Divider()
             Form {
                 Section {
@@ -138,7 +133,7 @@ private struct DialTab: View {
                                 .font(.callout)
                             Button("Copy Diagnostics") {
                                 Diagnostics.copyToPasteboard(dial: dial)
-                                copiedDiagnostics = true
+                                confirmCopy()
                             }
                         }
                     case .disabledInSystemSettings:
@@ -152,7 +147,7 @@ private struct DialTab: View {
                                 Button("Open Trackpad Settings") { Haptics.openTrackpadSettings() }
                                 Button("Copy Diagnostics") {
                                     Diagnostics.copyToPasteboard(dial: dial)
-                                    copiedDiagnostics = true
+                                    confirmCopy()
                                 }
                             }
                         }
@@ -212,15 +207,7 @@ private struct DialTab: View {
                 }
 
                 Section {
-                    LabeledContent("Output", value: dial.outputDeviceName)
-                    if !dial.isSupported {
-                        Label("No trackpad found.", systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.orange)
-                    } else if !dial.canControlVolume {
-                        Label("This output has no volume control.",
-                              systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.orange)
-                    }
+                    OutputStatus(dial: dial)
                     Button("Reset to Defaults") { settings.resetAll() }
                 }
             }
@@ -232,6 +219,7 @@ private struct DialTab: View {
                     settings.hapticsEnabled = false
                 }
                 hasAccessibility = MediaKeys.hasPermission
+                otherCopies = AppCopies.others
                 // Granting permission in another app should not need a relaunch.
                 InputSuppressor.shared.start()
             }
@@ -240,10 +228,15 @@ private struct DialTab: View {
 
     /// A live dial you can twist against while the sliders are in front of you,
     /// so sensitivity is something you feel rather than a number you guess at.
+    private func confirmCopy() {
+        copiedDiagnostics = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { copiedDiagnostics = false }
+    }
+
     /// Granting the wrong copy is indistinguishable from granting the right one.
     @ViewBuilder
     private var duplicateCopyWarning: some View {
-        if AppCopies.hasDuplicates {
+        if !otherCopies.isEmpty {
             Text("More than one copy of TwistPad is installed, and macOS grants "
                  + "this permission per copy. Grant the one you actually run, or "
                  + "delete the others.\n\nRunning: \(AppCopies.runningPath)")
@@ -253,7 +246,20 @@ private struct DialTab: View {
         }
     }
 
-    private var liveHeader: some View {
+}
+
+/// Only this view follows the gesture, so the rest of the form is not rebuilt
+/// on every frame of a twist.
+private struct LiveDialHeader: View {
+    @ObservedObject var settings = Settings.shared
+    @ObservedObject var dial: VolumeDial
+
+    private var twistProgress: Double {
+        guard settings.degreesForFullSweep > 0 else { return 0 }
+        return min(abs(dial.liveTwistDegrees) / settings.degreesForFullSweep, 1)
+    }
+
+    var body: some View {
         HStack(spacing: 20) {
             DialGauge(level: Double(dial.volumeLevel),
                       detents: settings.detentCount,
@@ -291,6 +297,22 @@ private struct DialTab: View {
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 18)
+    }
+}
+
+private struct OutputStatus: View {
+    @ObservedObject var dial: VolumeDial
+
+    var body: some View {
+        LabeledContent("Output", value: dial.outputDeviceName)
+        if !dial.isSupported {
+            Label("No trackpad found.", systemImage: "exclamationmark.triangle")
+                .foregroundStyle(.orange)
+        } else if !dial.canControlVolume {
+            Label("This output has no volume control.",
+                  systemImage: "exclamationmark.triangle")
+                .foregroundStyle(.orange)
+        }
     }
 }
 
@@ -490,6 +512,10 @@ private struct AboutTab: View {
         }
         .frame(maxWidth: .infinity)
         .padding(24)
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didBecomeActiveNotification)) { _ in
+            opensAtLogin = LoginItem.isEnabled
+        }
     }
 
     private func open(_ string: String) {

@@ -46,6 +46,12 @@ final class MultitouchDialSource {
     /// and the angle correction depends on it.
     private var surfaceSizes: [Int: (width: Double, height: Double)] = [:]
 
+    /// Contact area above which a touch is a palm rather than a finger. Measured
+    /// across 194 real contacts: fingers and thumbs peak around 0.9, palms come
+    /// in at 1.27 and up. A resting palm counted as a contact turns a two-finger
+    /// scroll into a three-contact pinch, which fires a track skip.
+    private let maximumFingerSize: Float = 1.1
+
     private init() {}
 
     var isSupported: Bool { MultitouchSupport.isAvailable }
@@ -109,6 +115,7 @@ final class MultitouchDialSource {
             guard let self, let handler = self.handler else { return }
             self.stop()
             self.start(handler: handler)
+            Haptics.invalidateHardwareCache()
         }
     }
 
@@ -122,7 +129,9 @@ final class MultitouchDialSource {
         // A gesture owns its trackpad until it finishes.
         if let gestureDevice, let device, gestureDevice != device { return }
 
-        let active = touches.filter { $0.state == kMTTouchStateTouching }
+        let touching = touches.filter { $0.state == kMTTouchStateTouching }
+        let active = touching.filter { $0.zTotal <= maximumFingerSize }
+        let palms = touching.count - active.count
         let count = active.count
 
         guard count == 2 || count == 3 else {
@@ -181,7 +190,10 @@ final class MultitouchDialSource {
             centroidAtTouchdown = centroid
             maxCentroidDrift = 0
             initialSeparation = separation
-            GestureLog.record(String(format: "start: contacts=%d sep=%.1fmm", count, separation))
+            GestureLog.record(String(
+                format: "start: contacts=%d sep=%.1fmm palmsIgnored=%d sizes=[%@]",
+                count, separation, palms,
+                active.map { String(format: "%.2f", $0.zTotal) }.joined(separator: ", ")))
             emit(delta: 0, spreadDelta: 0, phase: .began)
             return
         }

@@ -32,6 +32,11 @@ enum Haptics {
     /// Cached: probing creates and opens a device, which is not free.
     private static var cachedHardware: Bool?
 
+    /// Call when the set of trackpads may have changed.
+    static func invalidateHardwareCache() {
+        cachedHardware = nil
+    }
+
     /// False on any Mac without a Taptic Engine, which includes pre-2015
     /// MacBooks and the original Magic Trackpad.
     static var hasHardware: Bool {
