@@ -27,28 +27,38 @@ struct DialGauge<Center: View>: View {
     private let arcStart = 135.0
 
     var body: some View {
-        ZStack {
-            if detents > 0 {
-                segmented(count: detents)
-            } else {
-                continuous
+        GeometryReader { geometry in
+            let side = min(geometry.size.width, geometry.size.height)
+            ZStack {
+                if detents > 0 {
+                    segmented(count: detents, radius: side / 2)
+                } else {
+                    continuous
+                }
+                center
             }
-            center
+            .frame(width: geometry.size.width, height: geometry.size.height)
         }
         // No implicit animation: the dial tracks the fingers 1:1, and smoothing
         // here would read as lag in the gesture itself.
         .animation(nil, value: level)
     }
 
-    private func segmented(count: Int) -> some View {
+    private func segmented(count: Int, radius: CGFloat) -> some View {
         let lit = level * Double(count)
-        let gap = 0.17
+
+        // A round cap sticks out by half the line width past the end of the arc.
+        // Trimming without accounting for that makes neighbouring segments
+        // overlap, and the dial renders as one solid arc instead of detents.
+        let capDegrees = Double(lineWidth / 2 / max(radius, 1)) * 180 / .pi
+        let capFraction = capDegrees / 360
+        let breathingRoom = 0.004
 
         return ZStack {
             ForEach(0..<count, id: \.self) { index in
                 let start = Double(index) / Double(count)
                 let end = Double(index + 1) / Double(count)
-                let inset = (end - start) * gap / 2
+                let inset = min(capFraction + breathingRoom, (end - start) * 0.42)
 
                 Circle()
                     .trim(from: sweepFraction * (start + inset),

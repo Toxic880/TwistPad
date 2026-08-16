@@ -4,7 +4,21 @@ Twist two fingers on your trackpad like you're turning a dial, and the volume fo
 
 It clicks as it turns. 16 haptic detents across the range, so it feels like a knob instead of a gesture.
 
+![TwistPad demo](docs/demo.gif)
+
 ## Install
+
+Grab the latest zip from [Releases](https://github.com/Toxic880/TwistPad/releases/latest), unzip, and drag TwistPad to Applications.
+
+macOS will block it the first time, because I haven't paid Apple to notarize it. You'll get "Apple could not verify TwistPad.app is free of malware". Hit Done, then go to **System Settings > Privacy & Security**, scroll to Security, and click **Open Anyway**. Or skip all that in Terminal:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/TwistPad.app
+```
+
+Right click then Open used to work for this. It doesn't on macOS 15 and later.
+
+Building it yourself skips the whole problem, since apps you compile locally are never quarantined:
 
 ```bash
 git clone https://github.com/Toxic880/TwistPad.git

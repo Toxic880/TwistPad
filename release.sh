@@ -63,8 +63,21 @@ trap 'rm -f "$NOTES"' EXIT
 {
 	echo "Download \`$ZIP\`, unzip it, and drag TwistPad to Applications."
 	echo
-	echo "TwistPad is not notarized, so the **first launch needs a right click on"
-	echo "the app, then Open**. Double clicking will only show a warning."
+	echo "### macOS will block it on first launch"
+	echo
+	echo "TwistPad is not notarized, so you will see *\"Apple could not verify"
+	echo "TwistPad.app is free of malware\"*. Click **Done**, not Move to Bin, then:"
+	echo
+	echo "**System Settings > Privacy & Security**, scroll to Security, and click"
+	echo "**Open Anyway** next to TwistPad. Open the app again and confirm."
+	echo
+	echo "Or in Terminal:"
+	echo
+	echo '```bash'
+	echo "xattr -dr com.apple.quarantine /Applications/TwistPad.app"
+	echo '```'
+	echo
+	echo "Right click then Open no longer works on macOS 15 and later."
 	echo
 	echo "## Changes"
 	echo
