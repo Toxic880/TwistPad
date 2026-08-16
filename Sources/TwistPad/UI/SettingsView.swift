@@ -14,7 +14,7 @@ struct SettingsView: View {
             AboutTab(dial: dial, updateChecker: updateChecker)
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
-        .frame(width: 470, height: 560)
+        .frame(width: 480, height: 620)
     }
 }
 
@@ -28,6 +28,7 @@ private struct DialTab: View {
     /// another app is reflected without relaunching.
     @State private var hapticStatus = Haptics.availability
     @State private var copiedDiagnostics = false
+    @State private var hasAccessibility = MediaKeys.hasPermission
 
     /// How far through a full sweep the current twist has got.
     private var twistProgress: Double {
@@ -41,9 +42,44 @@ private struct DialTab: View {
             Divider()
             Form {
                 Section {
+                    HStack(alignment: .top, spacing: 14) {
+                        GestureDiagram(kind: .twist)
+                            .frame(width: 108)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Twist thumb and index like a dial.")
+                                .font(.callout)
+                            Text("Clockwise turns it up.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }
                     Toggle("Twist two fingers to set the volume", isOn: $settings.isEnabled)
                     Toggle("Reverse direction", isOn: $settings.invertDirection)
                         .help("By default, clockwise raises the volume.")
+
+                    Toggle("Stop pages scrolling while you gesture",
+                           isOn: $settings.blockScrollDuringGestures)
+                        .help("macOS sees the same fingers and scrolls at the same "
+                              + "time. This swallows those events while a gesture "
+                              + "is running.")
+
+                    if settings.blockScrollDuringGestures && !hasAccessibility {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Label("Needs Accessibility permission. Without it the "
+                                  + "volume still works, but pages keep scrolling.",
+                                  systemImage: "lock")
+                                .foregroundStyle(.orange)
+                                .font(.callout)
+                            HStack {
+                                Button("Grant Permission") { MediaKeys.requestPermission() }
+                                Button("Open Privacy Settings") {
+                                    MediaKeys.openAccessibilitySettings()
+                                }
+                            }
+                            duplicateCopyWarning
+                        }
+                    }
                 }
 
                 Section("Sensitivity") {
@@ -131,6 +167,50 @@ private struct DialTab: View {
                     Toggle("Show the dial on screen", isOn: $settings.hudEnabled)
                 }
 
+                Section("Tracks") {
+                    HStack(alignment: .top, spacing: 14) {
+                        GestureDiagram(kind: .pinch)
+                            .frame(width: 108)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Two fingers plus thumb, then squeeze or spread.")
+                                .font(.callout)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Text("Spread for next, squeeze for previous.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }
+                    Toggle("Three-finger pinch changes tracks",
+                           isOn: $settings.trackControlEnabled)
+
+                    if settings.trackControlEnabled {
+                        if hasAccessibility {
+                            Text("Keep going to skip further than one track.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            // Volume needs no permissions at all. Media keys do,
+                            // so this is only ever asked for once someone opts in.
+                            VStack(alignment: .leading, spacing: 6) {
+                                Label("Skipping tracks sends media keys, which macOS "
+                                      + "only allows with Accessibility permission.",
+                                      systemImage: "lock")
+                                    .foregroundStyle(.orange)
+                                    .font(.callout)
+                                HStack {
+                                    Button("Grant Permission") {
+                                        MediaKeys.requestPermission()
+                                    }
+                                    Button("Open Privacy Settings") {
+                                        MediaKeys.openAccessibilitySettings()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Section {
                     LabeledContent("Output", value: dial.outputDeviceName)
                     if !dial.isSupported {
@@ -148,13 +228,31 @@ private struct DialTab: View {
             .onReceive(NotificationCenter.default.publisher(
                 for: NSApplication.didBecomeActiveNotification)) { _ in
                 hapticStatus = Haptics.availability
-                if hapticStatus != .working { settings.hapticsEnabled = false }
+                if hapticStatus == .disabledInSystemSettings {
+                    settings.hapticsEnabled = false
+                }
+                hasAccessibility = MediaKeys.hasPermission
+                // Granting permission in another app should not need a relaunch.
+                InputSuppressor.shared.start()
             }
         }
     }
 
     /// A live dial you can twist against while the sliders are in front of you,
     /// so sensitivity is something you feel rather than a number you guess at.
+    /// Granting the wrong copy is indistinguishable from granting the right one.
+    @ViewBuilder
+    private var duplicateCopyWarning: some View {
+        if AppCopies.hasDuplicates {
+            Text("More than one copy of TwistPad is installed, and macOS grants "
+                 + "this permission per copy. Grant the one you actually run, or "
+                 + "delete the others.\n\nRunning: \(AppCopies.runningPath)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     private var liveHeader: some View {
         HStack(spacing: 20) {
             DialGauge(level: Double(dial.volumeLevel),

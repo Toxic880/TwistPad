@@ -1,7 +1,16 @@
 import AppKit
 import Foundation
 
-/// Watches raw trackpad contacts and emits `TwistSample`s for two-finger gestures.
+/// Watches raw trackpad contacts and emits `TwistSample`s for two- and
+/// three-finger twists.
+///
+/// Two fingers drive the volume by twisting. Three fingers change tracks by
+/// pinching: two fingers together plus the thumb, squeezed for the previous
+/// track and spread for the next.
+///
+/// Three contacts is what makes the pinch safe to claim. macOS owns the
+/// two-finger pinch for zoom, and its three-finger gestures are swipes, which
+/// translate rather than change spread.
 final class MultitouchDialSource {
 
     typealias Handler = (TwistSample) -> Void
@@ -14,8 +23,13 @@ final class MultitouchDialSource {
     private(set) var isRunning = false
     private var hasWakeObserver = false
 
-    private var trackedPair: Set<Int32> = []
-    private var previousAngle: Double?
+    private var trackedIDs: Set<Int32> = []
+    private var gestureContactCount = 0
+    /// Two-finger state: orientation of the line between the contacts.
+    private var previousLineAngle: Double?
+    /// Three-finger state: each contact's bearing from the cluster centroid.
+    private var previousBearings: [Int32: Double] = [:]
+    private var previousSpread: Double?
     private var centroidAtTouchdown: (x: Double, y: Double)?
     private var maxCentroidDrift: Double = 0
     private var initialSeparation: Double = 0
@@ -26,8 +40,8 @@ final class MultitouchDialSource {
     /// device and frames from the other are ignored until it ends.
     private var gestureDevice: MTDeviceRef?
 
-    private(set) var surfaceWidth: Double = 160
-    private(set) var surfaceHeight: Double = 100
+    private(set) var surfaceWidth: Double = 156
+    private(set) var surfaceHeight: Double = 96
     /// Sensor size per device: a Magic Trackpad is not shaped like a built-in one,
     /// and the angle correction depends on it.
     private var surfaceSizes: [Int: (width: Double, height: Double)] = [:]
@@ -109,18 +123,14 @@ final class MultitouchDialSource {
         if let gestureDevice, let device, gestureDevice != device { return }
 
         let active = touches.filter { $0.state == kMTTouchStateTouching }
+        let count = active.count
 
-        guard active.count == 2 else {
+        guard count == 2 || count == 3 else {
             if gestureDevice == nil || gestureDevice == device {
                 resetGesture(emitEnd: true)
             }
             return
         }
-
-        let sorted = active.sorted { $0.pathIndex < $1.pathIndex }
-        let ids = Set(sorted.map(\.pathIndex))
-        let a = sorted[0]
-        let b = sorted[1]
 
         if let device, let size = surfaceSizes[deviceKey(device)] {
             surfaceWidth = size.width
@@ -132,68 +142,117 @@ final class MultitouchDialSource {
         // different depending on which way the fingers are lying: the same gap
         // reads about 1.6x larger stacked vertically than side by side. Gates
         // built on normalized values therefore leak vertical two-finger scrolls.
-        let dx = Double(b.normalized.position.x - a.normalized.position.x) * surfaceWidth
-        let dy = Double(b.normalized.position.y - a.normalized.position.y) * surfaceHeight
-        let separation = (dx * dx + dy * dy).squareRoot()
-        let angle = atan2(dy, dx) * 180 / .pi
-        let centroid = (x: Double(a.normalized.position.x + b.normalized.position.x) / 2,
-                        y: Double(a.normalized.position.y + b.normalized.position.y) / 2)
+        let points = active.map { touch in
+            (id: touch.pathIndex,
+             x: Double(touch.normalized.position.x) * surfaceWidth,
+             y: Double(touch.normalized.position.y) * surfaceHeight)
+        }
+        let centroid = (x: points.map(\.x).reduce(0, +) / Double(count),
+                        y: points.map(\.y).reduce(0, +) / Double(count))
 
-        if ids != trackedPair {
+        // Mean radius doubled, so a three-finger spread is measured on the same
+        // scale as the gap between two fingers.
+        let spread = points
+            .map { ((($0.x - centroid.x) * ($0.x - centroid.x))
+                    + (($0.y - centroid.y) * ($0.y - centroid.y))).squareRoot() }
+            .reduce(0, +) / Double(count)
+        let separation = spread * 2
+
+        let ids = Set(points.map(\.id))
+        let bearings = Dictionary(uniqueKeysWithValues: points.map {
+            ($0.id, atan2($0.y - centroid.y, $0.x - centroid.x) * 180 / .pi)
+        })
+        let lineAngle: Double? = count == 2 ? {
+            let sorted = points.sorted { $0.id < $1.id }
+            return atan2(sorted[1].y - sorted[0].y, sorted[1].x - sorted[0].x) * 180 / .pi
+        }() : nil
+
+        if ids != trackedIDs {
             resetGesture(emitEnd: true)
             gestureDevice = device
-            trackedPair = ids
-            previousAngle = angle
+            trackedIDs = ids
+            gestureContactCount = count
+            previousLineAngle = lineAngle
+            previousBearings = bearings
+            previousSpread = separation
             centroidAtTouchdown = centroid
             maxCentroidDrift = 0
             initialSeparation = separation
-            handler?(TwistSample(deltaDegrees: 0,
-                                 centroidDrift: 0,
-                                 initialSeparation: separation,
-                                 phase: .began))
+            emit(delta: 0, spreadDelta: 0, phase: .began)
             return
         }
 
-        guard let previous = previousAngle else {
-            previousAngle = angle
-            return
+        let delta: Double
+        if count == 2 {
+            guard let previous = previousLineAngle, let current = lineAngle else {
+                previousLineAngle = lineAngle
+                return
+            }
+            // Two fingers define an *undirected* line, so its orientation is only
+            // meaningful mod 180. Tracking a full 360 vector produces a phantom
+            // 180 jump the moment the pair rotates past the axis, which reads as
+            // the volume slamming end to end.
+            var d = current - previous
+            while d > 90 { d -= 180 }
+            while d < -90 { d += 180 }
+            delta = d
+            previousLineAngle = current
+        } else {
+            // Three or more contacts each have a real bearing from the centroid,
+            // so there is no 180 ambiguity. Averaging their rotation is steadier
+            // than tracking any single pair.
+            var total = 0.0
+            var counted = 0
+            for (id, bearing) in bearings {
+                guard let previous = previousBearings[id] else { continue }
+                var d = bearing - previous
+                while d > 180 { d -= 360 }
+                while d < -180 { d += 360 }
+                total += d
+                counted += 1
+            }
+            previousBearings = bearings
+            guard counted > 0 else { return }
+            delta = total / Double(counted)
         }
-
-        // Two fingers define an *undirected* line, so its orientation is only
-        // meaningful mod 180. Tracking a full 360 vector produces a phantom 180
-        // jump the moment the pair rotates past the axis, which reads as the
-        // volume slamming end to end.
-        var delta = angle - previous
-        while delta > 90 { delta -= 180 }
-        while delta < -90 { delta += 180 }
-        previousAngle = angle
 
         if let origin = centroidAtTouchdown {
-            let driftX = (centroid.x - origin.x) * surfaceWidth
-            let driftY = (centroid.y - origin.y) * surfaceHeight
+            let driftX = centroid.x - origin.x
+            let driftY = centroid.y - origin.y
             maxCentroidDrift = max(maxCentroidDrift,
                                    (driftX * driftX + driftY * driftY).squareRoot())
         }
 
+        let spreadDelta = separation - (previousSpread ?? separation)
+        previousSpread = separation
+
+        emit(delta: delta, spreadDelta: spreadDelta, phase: .changed)
+    }
+
+    private func emit(delta: Double, spreadDelta: Double, phase: GesturePhase) {
         handler?(TwistSample(deltaDegrees: delta,
                              centroidDrift: maxCentroidDrift,
                              initialSeparation: initialSeparation,
-                             phase: .changed))
+                             spreadDeltaMM: spreadDelta,
+                             contactCount: gestureContactCount,
+                             phase: phase))
     }
 
     private func resetGesture(emitEnd: Bool) {
-        let hadGesture = !trackedPair.isEmpty
-        trackedPair = []
-        previousAngle = nil
+        let hadGesture = !trackedIDs.isEmpty
+        trackedIDs = []
+        previousLineAngle = nil
+        previousBearings = [:]
+        previousSpread = nil
         centroidAtTouchdown = nil
         gestureDevice = nil
 
+        // Ends with the count the gesture actually had, so going from two
+        // fingers to three closes the volume gesture rather than the track one.
         if emitEnd && hadGesture {
-            handler?(TwistSample(deltaDegrees: 0,
-                                 centroidDrift: maxCentroidDrift,
-                                 initialSeparation: initialSeparation,
-                                 phase: .ended))
+            emit(delta: 0, spreadDelta: 0, phase: .ended)
         }
+        gestureContactCount = 0
         maxCentroidDrift = 0
         initialSeparation = 0
     }

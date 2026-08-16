@@ -29,6 +29,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BINARY" "$APP/Contents/MacOS/$APP_NAME"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+cp Resources/TwistPad.icns "$APP/Contents/Resources/TwistPad.icns"
 
 ALL_IDENTITIES="$(security find-identity -v -p codesigning 2>/dev/null || true)"
 DETECTED="$(printf '%s\n' "$ALL_IDENTITIES" | sed -n 's/.*"\(Developer ID Application[^"]*\)".*/\1/p' | head -1)"

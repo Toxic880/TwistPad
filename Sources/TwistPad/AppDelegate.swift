@@ -16,6 +16,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var updateTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        replaceOlderInstances()
+
         statusItem = StatusItemController(dial: dial, updateChecker: updateChecker) { [weak self] in
             self?.showSettings()
         }
@@ -27,12 +29,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.hud.update(level: self.dial.volumeLevel,
                                 detents: self.settings.detentCount,
                                 isMuted: self.dial.isMuted)
-                self.hud.show()
+                self.hud.showVolume()
             } else {
                 // Unconditional: if the HUD was switched off mid-twist, guarding
                 // this would leave the panel on screen forever.
                 self.hud.scheduleHide()
             }
+        }
+
+        dial.onTrackSkip = { [weak self] forward in
+            guard let self, self.settings.hudEnabled else { return }
+            self.hud.showTrackSkip(forward: forward)
         }
 
         // No scheduler hop: the dial is meant to move with your fingers.
@@ -50,12 +57,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] _ in self?.statusItem?.refresh() }
             .store(in: &cancellables)
 
-        // A switch that cannot do anything should not be sitting on. Turned off
-        // rather than disabled, so it reads honestly and can still be turned
-        // back on once the trackpad setting is fixed.
-        if settings.hapticsEnabled, Haptics.availability != .working {
+        // Only the system setting is authoritative enough to switch someone's
+        // preference off. The hardware probe can report a false negative when
+        // another app holds the actuator, and silently disabling working
+        // haptics is worse than leaving a switch on that does nothing.
+        if settings.hapticsEnabled, Haptics.availability == .disabledInSystemSettings {
             settings.hapticsEnabled = false
         }
+
+        // No-op without Accessibility, which is the point: the volume dial keeps
+        // working with no permissions at all, just alongside the system's own
+        // interpretation of the same fingers.
+        InputSuppressor.shared.start()
+        configureLoginItemOnFirstLaunch()
 
         startGesture()
         scheduleUpdateChecks()
@@ -63,6 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         updateTimer?.invalidate()
+        InputSuppressor.shared.stop()
         dial.stop()
     }
 
@@ -71,6 +86,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - Startup
+
+    /// Installing over a running copy used to leave two menu bar icons fighting
+    /// over the same trackpad. The newest launch wins, since that is the one the
+    /// user just started.
+    private func replaceOlderInstances() {
+        guard let bundleID = Bundle.main.bundleIdentifier else { return }
+        let mine = ProcessInfo.processInfo.processIdentifier
+        let others = NSRunningApplication
+            .runningApplications(withBundleIdentifier: bundleID)
+            .filter { $0.processIdentifier != mine }
+        guard !others.isEmpty else { return }
+
+        others.forEach { $0.terminate() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            others.filter { !$0.isTerminated }.forEach { $0.forceTerminate() }
+        }
+    }
+
+    /// Menu bar utilities are expected to come back after a restart, so this is
+    /// set up once on first launch and is a toggle from then on.
+    private func configureLoginItemOnFirstLaunch() {
+        guard LoginItem.isAvailable, !settings.hasConfiguredLoginItem else { return }
+        settings.hasConfiguredLoginItem = true
+        LoginItem.set(true)
+    }
 
     /// At login the app can launch before the HID stack has enumerated the
     /// trackpad, so `MTDeviceCreateList` comes back empty and the gesture would

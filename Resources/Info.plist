@@ -6,6 +6,8 @@
 	<string>TwistPad</string>
 	<key>CFBundleExecutable</key>
 	<string>TwistPad</string>
+	<key>CFBundleIconFile</key>
+	<string>TwistPad</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.lukek.TwistPad</string>
 	<key>CFBundleInfoDictionaryVersion</key>

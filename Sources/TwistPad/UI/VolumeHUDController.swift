@@ -15,7 +15,10 @@ final class VolumeHUDController {
     /// twisting again during the fade hides the panel that was just re-opened.
     private var showToken = 0
 
-    private let size = CGSize(width: 160, height: 160)
+    /// The track skip panel is much smaller, so the window resizes with the mode.
+    private var size: CGSize {
+        model.trackSkipForward == nil ? HUDSize.volume : HUDSize.trackSkip
+    }
     private let bottomMargin: CGFloat = 140
 
     func show() {
@@ -24,6 +27,7 @@ final class VolumeHUDController {
         showToken &+= 1
 
         let panel = ensurePanel()
+        panel.contentView?.frame = NSRect(origin: .zero, size: size)
         reposition(panel)
         panel.orderFrontRegardless()
 
@@ -55,6 +59,21 @@ final class VolumeHUDController {
         model.level = Double(level)
         model.detents = detents
         model.isMuted = isMuted
+    }
+
+    /// Switches back to the dial. Kept separate from `update`, which runs on
+    /// every volume change including external ones, and must not yank a skip
+    /// indicator out from under itself.
+    func showVolume() {
+        model.trackSkipForward = nil
+        show()
+    }
+
+    /// Track skips are momentary, so this shows and hides itself.
+    func showTrackSkip(forward: Bool) {
+        model.trackSkipForward = forward
+        show()
+        scheduleHide(after: 0.55)
     }
 
     private func ensurePanel() -> NSPanel {

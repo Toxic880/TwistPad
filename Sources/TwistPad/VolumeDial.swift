@@ -1,8 +1,9 @@
 import AppKit
 import Combine
 
-/// Ties the twist gesture to the system volume.
-final class VolumeDial: ObservableObject, DialRecognizerDelegate {
+/// Ties the trackpad gestures to the system: two fingers twist to set the
+/// volume, three fingers pinch to change tracks.
+final class VolumeDial: ObservableObject, DialRecognizerDelegate, PinchRecognizerDelegate {
 
     @Published private(set) var volumeLevel: Float = 0
     @Published private(set) var isMuted: Bool = false
@@ -13,6 +14,7 @@ final class VolumeDial: ObservableObject, DialRecognizerDelegate {
     let volumeController = VolumeController()
 
     private let recognizer = DialRecognizer()
+    private let pinchRecognizer = PinchRecognizer()
     private let source = MultitouchDialSource.shared
     private let settings = Settings.shared
 
@@ -27,9 +29,14 @@ final class VolumeDial: ObservableObject, DialRecognizerDelegate {
     var outputDeviceName: String { volumeController.deviceName }
 
     var onEngagementChanged: ((Bool) -> Void)?
+    /// Fired when a track skip goes out, so the HUD can show which way.
+    var onTrackSkip: ((_ forward: Bool) -> Void)?
 
     init() {
         recognizer.delegate = self
+
+        pinchRecognizer.delegate = self
+
         syncFromSystem()
 
         volumeController.onVolumeChangedExternally = { [weak self] in
@@ -53,12 +60,21 @@ final class VolumeDial: ObservableObject, DialRecognizerDelegate {
         if !settings.isEnabled && recognizer.isEngaged {
             recognizer.abort()
         }
+        if !settings.trackControlEnabled {
+            pinchRecognizer.abort()
+        }
     }
 
     @discardableResult
     func start() -> Bool {
         source.start { [weak self] sample in
-            self?.recognizer.handle(sample)
+            guard let self else { return }
+            if sample.contactCount == 3 {
+                guard self.settings.trackControlEnabled else { return }
+                self.pinchRecognizer.handle(sample)
+            } else {
+                self.recognizer.handle(sample)
+            }
         }
     }
 
@@ -73,7 +89,7 @@ final class VolumeDial: ObservableObject, DialRecognizerDelegate {
 
     // MARK: - DialRecognizerDelegate
 
-    func dialDidEngage(_ recognizer: DialRecognizer) {
+    func dialDidEngage(_ recognizer: DialRecognizer, accumulated: Double) {
         guard settings.isEnabled, canControlVolume, !isExcludedAppFrontmost() else {
             isSuppressed = true
             return
@@ -90,6 +106,7 @@ final class VolumeDial: ObservableObject, DialRecognizerDelegate {
             : nil
 
         isEngaged = true
+        if settings.blockScrollDuringGestures { InputSuppressor.shared.isSuppressing = true }
         onEngagementChanged?(true)
     }
 
@@ -112,6 +129,7 @@ final class VolumeDial: ObservableObject, DialRecognizerDelegate {
     }
 
     func dialDidDisengage(_ recognizer: DialRecognizer) {
+        InputSuppressor.shared.isSuppressing = false
         isSuppressed = false
         accumulatedDegrees = 0
         liveTwistDegrees = 0
@@ -122,7 +140,23 @@ final class VolumeDial: ObservableObject, DialRecognizerDelegate {
         onEngagementChanged?(false)
     }
 
-    // MARK: - Applying the value
+    // MARK: - Track skipping
+
+    /// Squeeze for the previous track, spread for the next. Same shape as
+    /// reaching backwards or forwards through a playlist.
+    func pinchDidStep(_ recognizer: PinchRecognizer, expanding: Bool) {
+        guard settings.trackControlEnabled, MediaKeys.hasPermission else { return }
+        if settings.blockScrollDuringGestures { InputSuppressor.shared.isSuppressing = true }
+        MediaKeys.post(expanding ? .next : .previous)
+        if settings.hapticsEnabled { Haptics.limitTap() }
+        onTrackSkip?(expanding)
+    }
+
+    func pinchDidEnd(_ recognizer: PinchRecognizer) {
+        InputSuppressor.shared.isSuppressing = false
+    }
+
+    // MARK: - Applying the volume
 
     private func applyDetented(_ target: Float) {
         let steps = settings.detentCount

@@ -51,6 +51,15 @@ enum Diagnostics {
                             settings.activationThreshold))
         lines.append("  detents                  : \(settings.detentCount == 0 ? "smooth" : String(settings.detentCount))")
         lines.append("  reversed                 : \(yesNo(settings.invertDirection))")
+        lines.append("")
+
+        lines.append("Track control")
+        lines.append("  enabled                  : \(yesNo(settings.trackControlEnabled))")
+        lines.append("  accessibility granted    : \(yesNo(MediaKeys.hasPermission))")
+        lines.append("  running from             : \(AppCopies.runningPath)")
+        for other in AppCopies.others {
+            lines.append("  ALSO INSTALLED AT        : \(other.path)")
+        }
 
         return lines.joined(separator: "\n")
     }

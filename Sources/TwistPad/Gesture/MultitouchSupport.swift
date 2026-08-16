@@ -99,18 +99,24 @@ enum MultitouchSupport {
     /// succeeds only on hardware that can actually produce feedback, so it is a
     /// far better test than assuming every Mac can.
     static func hasHapticHardware() -> Bool {
-        guard let device = allDevices().refs.first,
+        // `found` must stay alive for the whole function: it owns the devices,
+        // and holding only the raw pointer lets ARC free them underneath us.
+        let found = allDevices()
+        defer { withExtendedLifetime(found) {} }
+
+        guard let device = found.refs.first,
               let readID = getDeviceID,
-              let create = actuatorCreateFromDeviceID,
-              let open = actuatorOpen else { return false }
+              let create = actuatorCreateFromDeviceID else { return false }
 
         var deviceID: UInt64 = 0
         guard readID(device, &deviceID) == 0 else { return false }
-        guard let actuator = create(deviceID) else { return false }
 
-        let opened = open(actuator) == 0
-        if opened { _ = actuatorClose?(actuator) }
-        return opened
+        // Creation is the capability test. Opening is deliberately not: it fails
+        // when another app already holds the actuator, and treating "busy" as
+        // "absent" would tell people with working hardware that they have none.
+        guard let actuator = create(deviceID) else { return false }
+        if actuatorOpen?(actuator) == 0 { _ = actuatorClose?(actuator) }
+        return true
     }
 
     static var isLayoutSane: Bool { MemoryLayout<MTTouch>.size == 96 }

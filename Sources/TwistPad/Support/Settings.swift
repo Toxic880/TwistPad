@@ -15,6 +15,9 @@ final class Settings: ObservableObject {
         static let hudEnabled = "hudEnabled"
         static let excludedBundleIDs = "excludedBundleIDs"
         static let automaticUpdateChecks = "automaticUpdateChecks"
+        static let trackControlEnabled = "trackControlEnabled"
+        static let blockScrollDuringGestures = "blockScrollDuringGestures"
+        static let hasConfiguredLoginItem = "hasConfiguredLoginItem"
     }
 
     private let defaults = UserDefaults.standard
@@ -55,6 +58,24 @@ final class Settings: ObservableObject {
         didSet { defaults.set(excludedBundleIDs, forKey: Key.excludedBundleIDs) }
     }
 
+    /// Set once, so turning the login item off stays off.
+    @Published var hasConfiguredLoginItem: Bool {
+        didSet { defaults.set(hasConfiguredLoginItem, forKey: Key.hasConfiguredLoginItem) }
+    }
+
+    /// Swallow scroll and gesture events while a gesture is engaged, so a twist
+    /// does not also scroll the page. Needs Accessibility, and does nothing
+    /// without it.
+    @Published var blockScrollDuringGestures: Bool {
+        didSet { defaults.set(blockScrollDuringGestures, forKey: Key.blockScrollDuringGestures) }
+    }
+
+    /// Three-finger twist to change tracks. Off by default: it needs
+    /// Accessibility permission, and TwistPad needs nothing at all without it.
+    @Published var trackControlEnabled: Bool {
+        didSet { defaults.set(trackControlEnabled, forKey: Key.trackControlEnabled) }
+    }
+
     /// A daily call to GitHub reveals that someone is running the app, so it's
     /// worth being able to switch off.
     @Published var automaticUpdateChecks: Bool {
@@ -91,6 +112,9 @@ final class Settings: ObservableObject {
             Key.hudEnabled: true,
             Key.excludedBundleIDs: Settings.defaultExclusions,
             Key.automaticUpdateChecks: true,
+            Key.trackControlEnabled: false,
+            Key.blockScrollDuringGestures: true,
+            Key.hasConfiguredLoginItem: false,
         ])
 
         isEnabled = defaults.bool(forKey: Key.isEnabled)
@@ -103,6 +127,9 @@ final class Settings: ObservableObject {
         excludedBundleIDs = defaults.stringArray(forKey: Key.excludedBundleIDs)
             ?? Settings.defaultExclusions
         automaticUpdateChecks = defaults.bool(forKey: Key.automaticUpdateChecks)
+        trackControlEnabled = defaults.bool(forKey: Key.trackControlEnabled)
+        blockScrollDuringGestures = defaults.bool(forKey: Key.blockScrollDuringGestures)
+        hasConfiguredLoginItem = defaults.bool(forKey: Key.hasConfiguredLoginItem)
     }
 
     func resetExclusionsToDefault() {
@@ -119,5 +146,7 @@ final class Settings: ObservableObject {
         hudEnabled = true
         excludedBundleIDs = Settings.defaultExclusions
         automaticUpdateChecks = true
+        trackControlEnabled = false
+        blockScrollDuringGestures = true
     }
 }

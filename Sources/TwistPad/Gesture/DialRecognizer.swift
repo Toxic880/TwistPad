@@ -13,18 +13,24 @@ struct TwistSample {
     let deltaDegrees: Double
     /// How far the midpoint between the fingers has moved since touch-down, mm.
     let centroidDrift: Double
-    /// Distance between the contacts when they landed, mm.
+    /// Distance between the contacts when they landed, mm. For three fingers
+    /// this is the cluster spread on the same scale.
     let initialSeparation: Double
+    /// Change in cluster spread since the last frame, mm. Negative is a pinch.
+    let spreadDeltaMM: Double
+    /// 2 for the volume gesture, 3 for track skipping.
+    let contactCount: Int
     let phase: GesturePhase
 }
 
 protocol DialRecognizerDelegate: AnyObject {
-    func dialDidEngage(_ recognizer: DialRecognizer)
+    /// `accumulated` carries the arming rotation, whose sign is the direction.
+    func dialDidEngage(_ recognizer: DialRecognizer, accumulated: Double)
     func dial(_ recognizer: DialRecognizer, didRotateBy degrees: Double)
     func dialDidDisengage(_ recognizer: DialRecognizer)
 }
 
-/// Decides when a two-finger contact is a deliberate volume twist.
+/// Decides when a multi-finger contact is a deliberate twist.
 ///
 /// Distances are millimetres, never normalized trackpad units. The sensor is far
 /// wider than it is deep, so the same physical gap measures about 1.6x larger
@@ -151,7 +157,7 @@ final class DialRecognizer {
         }
 
         state = .engaged
-        delegate?.dialDidEngage(self)
+        delegate?.dialDidEngage(self, accumulated: accumulated)
     }
 
     /// One repeating timer for the life of the gesture, rather than a fresh
