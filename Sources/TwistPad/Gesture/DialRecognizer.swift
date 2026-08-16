@@ -50,23 +50,24 @@ final class DialRecognizer {
     /// a real knob.
     var activationThreshold: Double = 8
 
-    /// The real defence against scrolls, in degrees of rotation per millimetre
-    /// of travel. A twist pivots in place, turning several degrees for every
-    /// millimetre the midpoint moves. A scroll is the opposite: it covers
-    /// distance and only rotates because two fingers never travel exactly
-    /// together. Comparing the two rates is scale-free, so it does not depend on
-    /// how fast or how far any particular person twists.
-    var minDegreesPerMillimetre: Double = 3.0
+    /// Rotation per millimetre travelled, as a secondary check. Kept loose: the
+    /// test fires the moment rotation reaches the threshold, so this is really
+    /// "drift under threshold/rate mm", and a strict value silently becomes a
+    /// very tight drift budget. Measured twists drift up to 5mm while arming.
+    var minDegreesPerMillimetre: Double = 1.0
 
-    /// Backstop for the ratio above, mm. Stops applying once engaged, because a
+    /// The primary defence against scrolls, mm. A twist pivots in place and has
+    /// arrived within a few millimetres; a scroll has travelled 10mm or more by
+    /// the time it has rotated this far. Stops applying once engaged, because a
     /// long twist naturally wanders.
-    var maxDriftWhileArming: Double = 10
+    var maxDriftWhileArming: Double = 7
 
-    /// Stance width, mm. Thumb and index sit wider apart than the index and
-    /// middle pair used for scrolling. Deliberately loose, because the rate test
-    /// does the real work and an over-tight stance gate silently kills the
-    /// gesture for anyone who holds their fingers closer together.
-    var minSeparation: Double = 24
+    /// Stance width, mm. Deliberately loose, and set below the narrowest twist
+    /// actually measured rather than at it, because fitting a threshold to the
+    /// edge of one session's data just moves the failures rather than removing
+    /// them. Drift is what really separates a twist from a scroll; this only
+    /// rejects two fingers pressed together.
+    var minSeparation: Double = 15
     var maxSeparation: Double = 115
 
     /// Contacts shift as they flatten out under pressure, which shows up as a
@@ -89,6 +90,12 @@ final class DialRecognizer {
     private var watchdog: Timer?
     private var lastEventTime: TimeInterval = 0
 
+    // Per-gesture stats, purely for the opt-in log.
+    private var peakAccumulated: Double = 0
+    private var lastDrift: Double = 0
+    private var lastSeparation: Double = 0
+    private var outcome = "no rotation"
+
     var isEngaged: Bool {
         if case .engaged = state { return true }
         return false
@@ -101,7 +108,12 @@ final class DialRecognizer {
             // new one starts, swallowing the disengage strands the dial "on" and
             // the HUD never hides.
             reset(notify: true)
-            state = stanceIsPlausible(sample) ? .arming(accumulated: 0, frames: 0) : .rejected
+            peakAccumulated = 0
+            lastDrift = 0
+            lastSeparation = sample.initialSeparation
+            let plausible = stanceIsPlausible(sample)
+            outcome = plausible ? "no rotation" : "stance rejected"
+            state = plausible ? .arming(accumulated: 0, frames: 0) : .rejected
             armWatchdog()
 
         case .changed:
@@ -138,8 +150,12 @@ final class DialRecognizer {
 
     private func evaluateArming(_ sample: TwistSample) {
         guard case .arming(let accumulated, _) = state else { return }
+        if abs(accumulated) > abs(peakAccumulated) { peakAccumulated = accumulated }
+        lastDrift = sample.centroidDrift
+        lastSeparation = sample.initialSeparation
 
         if sample.centroidDrift > maxDriftWhileArming {
+            outcome = "drift backstop"
             state = .rejected
             return
         }
@@ -152,10 +168,12 @@ final class DialRecognizer {
         guard rate >= minDegreesPerMillimetre else {
             // Travelling too far for the rotation involved. Not a twist, and it
             // will not become one, so ignore the rest of this contact.
+            outcome = String(format: "rate rejected (%.1f deg/mm)", rate)
             state = .rejected
             return
         }
 
+        outcome = "ENGAGED"
         state = .engaged
         delegate?.dialDidEngage(self, accumulated: accumulated)
     }
@@ -178,6 +196,12 @@ final class DialRecognizer {
         watchdog?.invalidate()
         watchdog = nil
         let wasEngaged = isEngaged
+        if case .idle = state {} else {
+            GestureLog.record(String(
+                format: "end: %@  peak=%.1fdeg sep=%.1fmm drift=%.1fmm (needs %.0fdeg, sep %.0f-%.0f, %.1f deg/mm)",
+                outcome, peakAccumulated, lastSeparation, lastDrift,
+                activationThreshold, minSeparation, maxSeparation, minDegreesPerMillimetre))
+        }
         state = .idle
         if notify && wasEngaged {
             delegate?.dialDidDisengage(self)

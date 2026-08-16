@@ -127,6 +127,9 @@ final class MultitouchDialSource {
 
         guard count == 2 || count == 3 else {
             if gestureDevice == nil || gestureDevice == device {
+                if !trackedIDs.isEmpty {
+                    GestureLog.record("abandoned: contacts went \(gestureContactCount) -> \(count)")
+                }
                 resetGesture(emitEnd: true)
             }
             return
@@ -178,6 +181,7 @@ final class MultitouchDialSource {
             centroidAtTouchdown = centroid
             maxCentroidDrift = 0
             initialSeparation = separation
+            GestureLog.record(String(format: "start: contacts=%d sep=%.1fmm", count, separation))
             emit(delta: 0, spreadDelta: 0, phase: .began)
             return
         }
