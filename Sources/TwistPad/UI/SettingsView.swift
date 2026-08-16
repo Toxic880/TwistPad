@@ -3,6 +3,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var dial: VolumeDial
+    @ObservedObject var updateChecker: UpdateChecker
 
     var body: some View {
         TabView {
@@ -10,7 +11,7 @@ struct SettingsView: View {
                 .tabItem { Label("Dial", systemImage: "dial.medium") }
             AppsTab()
                 .tabItem { Label("Apps", systemImage: "square.grid.2x2") }
-            AboutTab()
+            AboutTab(updateChecker: updateChecker)
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
         .frame(width: 470, height: 560)
@@ -232,6 +233,8 @@ private struct AppsTab: View {
 // MARK: - About
 
 private struct AboutTab: View {
+    @ObservedObject var settings = Settings.shared
+    @ObservedObject var updateChecker: UpdateChecker
     @State private var opensAtLogin = LoginItem.isEnabled
 
     private var version: String {
@@ -241,8 +244,18 @@ private struct AboutTab: View {
         return "Version \(short) (\(build))"
     }
 
+    private var updateStatus: String {
+        if updateChecker.isChecking { return "Checking…" }
+        switch updateChecker.lastOutcome {
+        case .upToDate: return "You're up to date."
+        case .noReleasesYet: return "No releases published yet."
+        case .failed: return "Couldn't reach GitHub."
+        case .updateAvailable, .none: return ""
+        }
+    }
+
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 15) {
             Spacer()
 
             DialGauge(level: 0.68, detents: 16, lineWidth: 6) {
@@ -260,13 +273,44 @@ private struct AboutTab: View {
                     .foregroundStyle(.secondary)
             }
 
-            Toggle("Open at login", isOn: $opensAtLogin)
-                .toggleStyle(.switch)
-                .onChange(of: opensAtLogin) { _, newValue in
-                    LoginItem.set(newValue)
-                    opensAtLogin = LoginItem.isEnabled
+            if let newVersion = updateChecker.availableVersion {
+                VStack(spacing: 7) {
+                    Label("Version \(newVersion) is available",
+                          systemImage: "arrow.down.circle.fill")
+                        .font(.callout.weight(.medium))
+                    Button("Get Update") {
+                        NSWorkspace.shared.open(UpdateChecker.releasesPage)
+                    }
+                    .buttonStyle(.borderedProminent)
                 }
-                .disabled(!LoginItem.isAvailable)
+                .padding(.vertical, 11)
+                .frame(maxWidth: .infinity)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.accentColor.opacity(0.12))
+                )
+            } else {
+                HStack(spacing: 8) {
+                    Button("Check for Updates") { updateChecker.check() }
+                        .disabled(updateChecker.isChecking)
+                    Text(updateStatus)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(height: 22)
+            }
+
+            VStack(alignment: .leading, spacing: 7) {
+                Toggle("Check for updates automatically", isOn: $settings.automaticUpdateChecks)
+                Toggle("Open at login", isOn: $opensAtLogin)
+                    .onChange(of: opensAtLogin) { _, newValue in
+                        LoginItem.set(newValue)
+                        opensAtLogin = LoginItem.isEnabled
+                    }
+                    .disabled(!LoginItem.isAvailable)
+            }
+            .toggleStyle(.switch)
+            .frame(maxWidth: 300, alignment: .leading)
 
             HStack(spacing: 10) {
                 Button("Contact Support") {

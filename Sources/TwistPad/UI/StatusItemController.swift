@@ -4,11 +4,15 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     private let statusItem: NSStatusItem
     private let dial: VolumeDial
+    private let updateChecker: UpdateChecker
     private let settings = Settings.shared
     private let onOpenSettings: () -> Void
 
-    init(dial: VolumeDial, onOpenSettings: @escaping () -> Void) {
+    init(dial: VolumeDial,
+         updateChecker: UpdateChecker,
+         onOpenSettings: @escaping () -> Void) {
         self.dial = dial
+        self.updateChecker = updateChecker
         self.onOpenSettings = onOpenSettings
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
@@ -29,6 +33,17 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
+
+        if let version = updateChecker.availableVersion {
+            let update = NSMenuItem(title: "Update to \(version) available",
+                                    action: #selector(openReleasesPage),
+                                    keyEquivalent: "")
+            update.target = self
+            update.image = NSImage(systemSymbolName: "arrow.down.circle.fill",
+                                   accessibilityDescription: nil)
+            menu.addItem(update)
+            menu.addItem(.separator())
+        }
 
         let status: String
         if !dial.isSupported {
@@ -91,5 +106,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     @objc private func openSettings() {
         onOpenSettings()
+    }
+
+    @objc private func openReleasesPage() {
+        NSWorkspace.shared.open(UpdateChecker.releasesPage)
     }
 }

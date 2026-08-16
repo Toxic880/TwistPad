@@ -14,6 +14,7 @@ final class Settings: ObservableObject {
         static let hapticsEnabled = "hapticsEnabled"
         static let hudEnabled = "hudEnabled"
         static let excludedBundleIDs = "excludedBundleIDs"
+        static let automaticUpdateChecks = "automaticUpdateChecks"
     }
 
     private let defaults = UserDefaults.standard
@@ -54,6 +55,12 @@ final class Settings: ObservableObject {
         didSet { defaults.set(excludedBundleIDs, forKey: Key.excludedBundleIDs) }
     }
 
+    /// A daily call to GitHub reveals that someone is running the app, so it's
+    /// worth being able to switch off.
+    @Published var automaticUpdateChecks: Bool {
+        didSet { defaults.set(automaticUpdateChecks, forKey: Key.automaticUpdateChecks) }
+    }
+
     static let defaultExclusions: [String] = [
         "com.apple.Preview",
         "com.apple.Photos",
@@ -83,6 +90,7 @@ final class Settings: ObservableObject {
             Key.hapticsEnabled: true,
             Key.hudEnabled: true,
             Key.excludedBundleIDs: Settings.defaultExclusions,
+            Key.automaticUpdateChecks: true,
         ])
 
         isEnabled = defaults.bool(forKey: Key.isEnabled)
@@ -94,6 +102,7 @@ final class Settings: ObservableObject {
         hudEnabled = defaults.bool(forKey: Key.hudEnabled)
         excludedBundleIDs = defaults.stringArray(forKey: Key.excludedBundleIDs)
             ?? Settings.defaultExclusions
+        automaticUpdateChecks = defaults.bool(forKey: Key.automaticUpdateChecks)
     }
 
     func resetExclusionsToDefault() {
@@ -109,5 +118,6 @@ final class Settings: ObservableObject {
         hapticsEnabled = true
         hudEnabled = true
         excludedBundleIDs = Settings.defaultExclusions
+        automaticUpdateChecks = true
     }
 }
