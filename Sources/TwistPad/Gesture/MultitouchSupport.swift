@@ -81,6 +81,38 @@ enum MultitouchSupport {
                as: (@convention(c) (MTDeviceRef, UnsafeMutablePointer<Int32>,
                                     UnsafeMutablePointer<Int32>) -> Void).self)
 
+    static let getDeviceID = symbol("MTDeviceGetDeviceID",
+        as: (@convention(c) (MTDeviceRef, UnsafeMutablePointer<UInt64>) -> Int32).self)
+
+    /// Returns the actuator directly. It is not an out-parameter call, and
+    /// treating it as one reads the low half of the pointer as an error code.
+    static let actuatorCreateFromDeviceID = symbol("MTActuatorCreateFromDeviceID",
+        as: (@convention(c) (UInt64) -> UnsafeMutableRawPointer?).self)
+
+    static let actuatorOpen = symbol("MTActuatorOpen",
+        as: (@convention(c) (UnsafeMutableRawPointer) -> Int32).self)
+
+    static let actuatorClose = symbol("MTActuatorClose",
+        as: (@convention(c) (UnsafeMutableRawPointer) -> Int32).self)
+
+    /// Whether this trackpad has a Taptic Engine at all. Opening an actuator
+    /// succeeds only on hardware that can actually produce feedback, so it is a
+    /// far better test than assuming every Mac can.
+    static func hasHapticHardware() -> Bool {
+        guard let device = allDevices().refs.first,
+              let readID = getDeviceID,
+              let create = actuatorCreateFromDeviceID,
+              let open = actuatorOpen else { return false }
+
+        var deviceID: UInt64 = 0
+        guard readID(device, &deviceID) == 0 else { return false }
+        guard let actuator = create(deviceID) else { return false }
+
+        let opened = open(actuator) == 0
+        if opened { _ = actuatorClose?(actuator) }
+        return opened
+    }
+
     static var isLayoutSane: Bool { MemoryLayout<MTTouch>.size == 96 }
 
     static var isAvailable: Bool {

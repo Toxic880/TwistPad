@@ -24,6 +24,10 @@ private struct DialTab: View {
     @ObservedObject var settings = Settings.shared
     @ObservedObject var dial: VolumeDial
 
+    /// Re-read when the window comes forward, so toggling the system setting in
+    /// another app is reflected without relaunching.
+    @State private var hapticStatus = Haptics.availability
+
     /// How far through a full sweep the current twist has got.
     private var twistProgress: Double {
         guard settings.degreesForFullSweep > 0 else { return 0 }
@@ -73,7 +77,31 @@ private struct DialTab: View {
                     .pickerStyle(.segmented)
 
                     Toggle("Haptic click at each step", isOn: $settings.hapticsEnabled)
-                        .disabled(settings.detentCount == 0)
+                        .disabled(settings.detentCount == 0 || hapticStatus != .working)
+
+                    // Haptics fail silently, so say which of the two reasons it
+                    // is rather than leaving a toggle that looks fine and does
+                    // nothing at all.
+                    switch hapticStatus {
+                    case .working:
+                        Button("Test Haptics") { Haptics.test() }
+                            .disabled(!settings.hapticsEnabled || settings.detentCount == 0)
+                    case .noHardware:
+                        Label("This trackpad has no haptic engine, so there is "
+                              + "nothing to feel. Everything else still works.",
+                              systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                            .font(.callout)
+                    case .disabledInSystemSettings:
+                        VStack(alignment: .leading, spacing: 6) {
+                            Label("Haptic feedback is switched off for your trackpad.",
+                                  systemImage: "exclamationmark.triangle")
+                                .foregroundStyle(.orange)
+                                .font(.callout)
+                            Button("Open Trackpad Settings") { Haptics.openTrackpadSettings() }
+                        }
+                    }
+
                     Toggle("Show the dial on screen", isOn: $settings.hudEnabled)
                 }
 
@@ -91,6 +119,10 @@ private struct DialTab: View {
                 }
             }
             .formStyle(.grouped)
+            .onReceive(NotificationCenter.default.publisher(
+                for: NSApplication.didBecomeActiveNotification)) { _ in
+                hapticStatus = Haptics.availability
+            }
         }
     }
 
