@@ -126,10 +126,15 @@ final class MultitouchDialSource {
             surfaceHeight = size.height
         }
 
-        let dx = Double(b.normalized.position.x - a.normalized.position.x)
-        let dy = Double(b.normalized.position.y - a.normalized.position.y)
+        // Everything below is in millimetres, never normalized units. The sensor
+        // is far wider than it is deep, so a normalized distance means something
+        // different depending on which way the fingers are lying: the same gap
+        // reads about 1.6x larger stacked vertically than side by side. Gates
+        // built on normalized values therefore leak vertical two-finger scrolls.
+        let dx = Double(b.normalized.position.x - a.normalized.position.x) * surfaceWidth
+        let dy = Double(b.normalized.position.y - a.normalized.position.y) * surfaceHeight
         let separation = (dx * dx + dy * dy).squareRoot()
-        let angle = atan2(dy * surfaceHeight, dx * surfaceWidth) * 180 / .pi
+        let angle = atan2(dy, dx) * 180 / .pi
         let centroid = (x: Double(a.normalized.position.x + b.normalized.position.x) / 2,
                         y: Double(a.normalized.position.y + b.normalized.position.y) / 2)
 
@@ -163,9 +168,10 @@ final class MultitouchDialSource {
         previousAngle = angle
 
         if let origin = centroidAtTouchdown {
-            let drift = ((centroid.x - origin.x) * (centroid.x - origin.x)
-                         + (centroid.y - origin.y) * (centroid.y - origin.y)).squareRoot()
-            maxCentroidDrift = max(maxCentroidDrift, drift)
+            let driftX = (centroid.x - origin.x) * surfaceWidth
+            let driftY = (centroid.y - origin.y) * surfaceHeight
+            maxCentroidDrift = max(maxCentroidDrift,
+                                   (driftX * driftX + driftY * driftY).squareRoot())
         }
 
         handler?(TwistSample(deltaDegrees: delta,

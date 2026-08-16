@@ -11,8 +11,9 @@ struct TwistSample {
     /// Change in the contact pair's orientation since the last frame, positive
     /// counter-clockwise, already unwrapped.
     let deltaDegrees: Double
-    /// How far the midpoint between the fingers has moved since touch-down.
+    /// How far the midpoint between the fingers has moved since touch-down, mm.
     let centroidDrift: Double
+    /// Distance between the contacts when they landed, mm.
     let initialSeparation: Double
     let phase: GesturePhase
 }
@@ -25,24 +26,46 @@ protocol DialRecognizerDelegate: AnyObject {
 
 /// Decides when a two-finger contact is a deliberate volume twist.
 ///
-/// Measured over 48 twists and 21 scrolls, rotation alone separates the two by
-/// only ~2°, so drift and stance width have to agree before engaging:
-/// twists run 21°–183° with drift ≤ 0.11 and separation 0.20–0.59, while
-/// scrolls stay under 19° but drift up to 0.24 at separation 0.14–0.18.
+/// Distances are millimetres, never normalized trackpad units. The sensor is far
+/// wider than it is deep, so the same physical gap measures about 1.6x larger
+/// with the fingers stacked vertically than side by side. Gates written in
+/// normalized units silently let vertical two-finger scrolls through.
+///
+/// A scroll does rotate a little, because two fingers never travel exactly
+/// together, so rotation alone cannot separate the two. What actually separates
+/// them is that a twist pivots without going anywhere: the midpoint between the
+/// fingers barely moves, while a scroll drags it across the pad.
 final class DialRecognizer {
 
     weak var delegate: DialRecognizerDelegate?
 
-    /// Spent arming rather than applied, so engaging feels like the free play at
-    /// the start of a real knob. Kept small: every degree here is wrist travel
-    /// unavailable for setting the volume.
+    /// Rotation required before the dial takes control, degrees. Spent arming
+    /// rather than applied, so engaging feels like the free play at the start of
+    /// a real knob.
     var activationThreshold: Double = 8
 
-    /// Only applies while arming; a long twist naturally wanders.
-    var maxDriftWhileArming: Double = 0.08
+    /// The real defence against scrolls, in degrees of rotation per millimetre
+    /// of travel. A twist pivots in place, turning several degrees for every
+    /// millimetre the midpoint moves. A scroll is the opposite: it covers
+    /// distance and only rotates because two fingers never travel exactly
+    /// together. Comparing the two rates is scale-free, so it does not depend on
+    /// how fast or how far any particular person twists.
+    var minDegreesPerMillimetre: Double = 3.0
 
-    var minSeparation: Double = 0.19
-    var maxSeparation: Double = 0.80
+    /// Backstop for the ratio above, mm. Stops applying once engaged, because a
+    /// long twist naturally wanders.
+    var maxDriftWhileArming: Double = 10
+
+    /// Stance width, mm. Thumb and index sit wider apart than the index and
+    /// middle pair used for scrolling. Deliberately loose, because the rate test
+    /// does the real work and an over-tight stance gate silently kills the
+    /// gesture for anyone who holds their fingers closer together.
+    var minSeparation: Double = 24
+    var maxSeparation: Double = 115
+
+    /// Contacts shift as they flatten out under pressure, which shows up as a
+    /// few degrees of rotation that nobody intended. Ignore the settling frames.
+    var settlingFrames: Int = 2
 
     /// Release if an engaged gesture goes quiet without an end phase. A dial
     /// stuck on is worse than one that lets go early.
@@ -50,7 +73,7 @@ final class DialRecognizer {
 
     private enum State {
         case idle
-        case arming(accumulated: Double)
+        case arming(accumulated: Double, frames: Int)
         case engaged
         /// Disqualified; ignore until the fingers lift.
         case rejected
@@ -72,7 +95,7 @@ final class DialRecognizer {
             // new one starts, swallowing the disengage strands the dial "on" and
             // the HUD never hides.
             reset(notify: true)
-            state = stanceIsPlausible(sample) ? .arming(accumulated: 0) : .rejected
+            state = stanceIsPlausible(sample) ? .arming(accumulated: 0, frames: 0) : .rejected
             armWatchdog()
 
         case .changed:
@@ -80,11 +103,13 @@ final class DialRecognizer {
             case .rejected:
                 break
             case .idle:
-                state = stanceIsPlausible(sample) ? .arming(accumulated: sample.deltaDegrees)
-                                                  : .rejected
+                state = stanceIsPlausible(sample) ? .arming(accumulated: 0, frames: 0) : .rejected
                 evaluateArming(sample)
-            case .arming(let accumulated):
-                state = .arming(accumulated: accumulated + sample.deltaDegrees)
+            case .arming(let accumulated, let frames):
+                let next = frames + 1
+                state = next <= settlingFrames
+                    ? .arming(accumulated: accumulated, frames: next)
+                    : .arming(accumulated: accumulated + sample.deltaDegrees, frames: next)
                 evaluateArming(sample)
             case .engaged:
                 delegate?.dial(self, didRotateBy: sample.deltaDegrees)
@@ -106,7 +131,7 @@ final class DialRecognizer {
     }
 
     private func evaluateArming(_ sample: TwistSample) {
-        guard case .arming(let accumulated) = state else { return }
+        guard case .arming(let accumulated, _) = state else { return }
 
         if sample.centroidDrift > maxDriftWhileArming {
             state = .rejected
@@ -114,6 +139,17 @@ final class DialRecognizer {
         }
 
         guard abs(accumulated) >= activationThreshold else { return }
+
+        // Floor the divisor: a twist that pivots almost perfectly would other-
+        // wise divide by something near zero.
+        let rate = abs(accumulated) / max(sample.centroidDrift, 0.5)
+        guard rate >= minDegreesPerMillimetre else {
+            // Travelling too far for the rotation involved. Not a twist, and it
+            // will not become one, so ignore the rest of this contact.
+            state = .rejected
+            return
+        }
+
         state = .engaged
         delegate?.dialDidEngage(self)
     }
