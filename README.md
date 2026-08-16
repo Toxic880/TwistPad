@@ -1,7 +1,10 @@
 # TwistPad
 
-Twist two fingers on your trackpad — thumb and index, like turning a dial — to set
-your Mac's volume. Detented, with a haptic click at every step.
+Twist two fingers on your trackpad like you're turning a dial, and the volume follows. Thumb and index works best.
+
+It clicks as it turns. 16 haptic detents across the range, so it actually feels like a knob instead of a gesture.
+
+## Install
 
 ```bash
 git clone https://github.com/Toxic880/TwistPad.git
@@ -10,123 +13,87 @@ cd TwistPad
 open TwistPad.app
 ```
 
-Menu bar only — no Dock icon. Requires macOS 14+ and a multitouch trackpad.
-**No permissions needed:** not Accessibility, not Input Monitoring.
+It lives in the menu bar. You need macOS 14 or newer and a trackpad.
 
----
+## How it feels
 
-## Why it isn't built on the public API
+Your wrist is the limit here, not the software. I measured how far a hand actually twists before it gets awkward and the median came out around 60°, so a full sweep from silent to max is set to 70° by default. One comfortable turn covers the whole range and you never have to re-grip.
 
-macOS has a public two-finger rotation gesture (`NSEvent.EventType.rotate`), and
-it's the obvious foundation. It cannot be used here.
+* Clockwise turns it up, like every volume knob ever made. Flip it in settings if you're wired backwards.
+* 16 detents by default, the same granularity as the volume keys. Every one gives you a haptic tick, and you get a firmer tap at 0 and 100 so you can feel the ends without looking.
+* The first 8° of twist does nothing on purpose. It's the free play at the start of a real knob, and it stops a stray scroll from nudging your volume.
+* It reads the actual system volume every time you start a twist, so it doesn't fight with the media keys.
+* The on-screen dial is segmented, one chunk per detent. What lights up is exactly what you just felt click.
 
-Measured while building this: across **8,782 multitouch frames containing 48
-deliberate thumb-and-index twists, a global `.rotate` monitor fired zero times**,
-while 131 `.scrollWheel` events came through. macOS arbitrates scroll-vs-rotate
-*before* emitting an event, and for this hand shape it commits to scroll every
-time. There's no threshold to tune, because no event ever arrives.
+Everything is tunable in settings, including a live readout of how far you're twisting so you can find your own sensitivity.
 
-So TwistPad reads raw trackpad contacts from the private `MultitouchSupport`
-framework, resolved at runtime with `dlopen`/`dlsym` — the same approach
-BetterTouchTool and Jitouch take. `MTTouch` is 96 bytes on arm64 and the layout is
-verified at launch; if a future macOS changes it, TwistPad reports that it can't
-read the trackpad instead of misbehaving.
+## Why it doesn't use Apple's rotation gesture
+
+macOS has a built-in two finger rotate gesture (`NSEvent.EventType.rotate`) and that's obviously where you'd start. It doesn't work.
+
+I logged 8,782 multitouch frames while doing 48 deliberate thumb-and-index twists. The rotate event fired exactly zero times. 131 scroll events came through instead. macOS decides between scroll and rotate before it ever hands you an event, and for this hand shape it picks scroll every single time. There's no threshold to tune because the event simply never arrives.
+
+So TwistPad reads raw contacts straight off the trackpad using the private MultitouchSupport framework, loaded at runtime with `dlopen`. Same approach BetterTouchTool and Jitouch take. The `MTTouch` struct is 96 bytes on Apple Silicon and the app verifies that at launch, so if Apple ever changes it you get a clear "can't read the trackpad" message instead of garbage angles.
+
+Nice side effect: this needs no permissions at all. No Accessibility prompt, no Input Monitoring. I expected to have to ask for something and never did.
 
 ## Telling a twist from a scroll
 
-Two fingers resting on a trackpad are ambiguous. Measured over 48 twists and 21
-scrolls:
+Two fingers sitting on a trackpad are ambiguous. Here's what I measured across 48 twists and 21 scrolls:
 
-| signal                  | twists      | scrolls     |
-| ----------------------- | ----------- | ----------- |
-| peak rotation           | 20.9°…183°  | 0.1°…18.9°  |
-| centroid drift          | ≤ 0.11      | up to 0.24  |
-| separation at touchdown | 0.20…0.59   | 0.14…0.18   |
+| | twists | scrolls |
+|---|---|---|
+| peak rotation | 20.9° to 183° | 0.1° to 18.9° |
+| centroid drift | under 0.11 | up to 0.24 |
+| finger separation | 0.20 to 0.59 | 0.14 to 0.18 |
 
-Rotation alone separates the two populations by about **2°** — nowhere near enough
-to rely on. All three signals have to agree:
+Look at the rotation row. The two overlap to within about 2°, so you cannot just threshold on "did it rotate enough". All three signals have to agree:
 
-- **Rotation** clears the dead zone (default 8°).
-- **Centroid drift** stays low *while arming*. Twisting barely moves the midpoint
-  between your fingers; scrolling drags it. This stops applying once engaged,
-  because a long twist naturally wanders.
-- **Stance width** looks like thumb-and-index. Too narrow is an index-and-middle
-  scroll; too wide is a palm, or two hands.
+**Rotation** has to clear the 8° dead zone.
 
-A contact that fails a check is rejected for the rest of the touch, so a scroll
-can't sneak in by rotating slightly at the end.
+**Centroid drift** has to stay low while it's still deciding. Twisting barely moves the point between your fingers, scrolling drags it across the pad. Once the gesture locks in this stops mattering, because a long twist naturally wanders a bit.
 
-## The 180° trap
+**Finger separation** has to look like thumb and index. Too close and it's an index/middle scroll, too far apart and it's a palm or two hands.
 
-Worth calling out, because the naive implementation looks correct and fails badly.
+Fail any of those and that touch is dead until you lift your fingers, so a scroll can't sneak through by twisting slightly at the end.
 
-Two fingers define an **undirected line**. Its orientation is only meaningful
-modulo 180°. Pair the contacts by position (say, sorted by x) and track a full
-360° vector, and the moment a twist carries the pair through the sort axis the
-ordering swaps and the measured angle jumps 180° in one frame — which reads as the
-volume slamming from one end to the other.
+## The 180° thing that will bite you
 
-The fix is two-part: pair contacts by `pathIndex`, which is stable for the life of
-a contact, and unwrap every delta into ±90°.
+This one looks correct and breaks spectacularly.
 
-## Feel
+Two fingers give you a line, not an arrow. A line pointing up-left and a line pointing down-right are the same line, so the angle only means anything modulo 180.
 
-**Range of motion is the binding constraint.** A natural thumb-and-index twist has
-a median of 60°, so the full sweep defaults to **70°** with an **8°** dead zone —
-one comfortable turn covers the whole range without re-gripping.
+If you pair the contacts by position (sorting them by x, say) and track a full 360° vector, then the moment a twist carries the pair past vertical the sort order flips and your measured angle jumps 180° in a single frame. The volume slams straight to 0 or 100. My first version did this and the logs were full of impossible 176° jumps between consecutive frames.
 
-- **16 detents** by default, matching the volume keys, with a `levelChange` haptic
-  per step and a firmer `alignment` tap at 0% and 100% so you feel the ends.
-- **Clockwise raises the volume**, like every physical knob. Reversible.
-- **Anchors to live system volume** on each engage, so it respects the media keys.
-- **The dead zone is spent, not applied** — the first 8° arms the gesture without
-  moving anything, which reads as the free play at the start of a real knob.
+The fix has two parts. Pair the contacts by `pathIndex`, which stays constant for as long as a finger is down, and unwrap every angle change into ±90.
 
-The on-screen dial is segmented, one segment per detent, so what lights up is
-exactly what you felt click under your fingers. Everything is tunable in Settings,
-including a live readout of how far you're actually twisting.
-
-## Layout
+## Code layout
 
 ```
 Sources/TwistPad/
 ├── main.swift                     entry point, .accessory activation policy
 ├── AppDelegate.swift              wiring, settings window
-├── VolumeDial.swift               rotation → volume, detents, haptics
+├── VolumeDial.swift               rotation to volume, detents, haptics
 ├── Gesture/
 │   ├── MultitouchSupport.swift    private framework ABI, resolved at runtime
-│   ├── MultitouchDialSource.swift contacts → TwistSample, angle unwrapping
-│   └── DialRecognizer.swift       twist-vs-scroll state machine
-├── Audio/VolumeController.swift   CoreAudio, coalesced writes
+│   ├── MultitouchDialSource.swift contacts to TwistSample, angle unwrapping
+│   └── DialRecognizer.swift       twist vs scroll state machine
+├── Audio/VolumeController.swift   CoreAudio
 ├── UI/                            HUD, menu bar icon, settings
 └── Support/                       settings, haptics, login item
 ```
 
-The recognizer consumes `TwistSample` values rather than multitouch structs, so the
-input path can be swapped without touching the gesture logic.
+The recognizer takes `TwistSample` values rather than raw multitouch structs, so you can swap the input out without touching the gesture logic.
 
-**Writes are coalesced.** A twist produces up to 120 updates/second, and
-`AudioObjectSetPropertyData` round-trips over the link for Bluetooth and AirPlay
-where it can block for milliseconds. Writes go latest-wins onto a serial queue, so
-a slow device drops intermediate values instead of stuttering the HUD.
+One non-obvious bit: volume writes get coalesced latest-wins onto a serial queue. A twist fires up to 120 updates a second, and setting volume on a Bluetooth device round-trips over the link and can block for milliseconds.
 
-**Not every device has a master volume control.** Built-in speakers do; many USB
-and aggregate devices only expose per-channel controls, and some digital outputs
-expose none. The strategy is probed per device.
+## Known issues
 
-## Limitations
-
-- **Private API.** A macOS update could change the `MTTouch` layout or remove the
-  symbols. TwistPad degrades to "can't read the trackpad" rather than crashing.
-- **Apps that use rotation themselves.** Because contacts are read at the driver
-  level, TwistPad can't consume the event — Preview would rotate an image *and*
-  change the volume. Those apps are excluded by bundle ID instead (editable in
-  Settings → Apps). Consuming the event would need a CGEventTap and the
-  Accessibility permission that currently isn't required at all.
-- **Ad-hoc signed**, not notarized. First launch may need right-click → Open.
-- **Open at Login** registers the app at its current path, so re-toggle it if you
-  move `TwistPad.app`.
+* It's built on a private framework. Apple could change or remove it in any update. It'll tell you it can't read the trackpad rather than crashing, but it would need fixing.
+* Apps that use rotation themselves (Preview, Photos, Figma) will rotate their content *and* change your volume, because reading contacts at the driver level means TwistPad can't swallow the event. Those apps are excluded by default and the list is editable in settings.
+* Not notarized, so the first launch probably needs a right click then Open.
+* "Open at Login" registers whatever path the app is currently at. Move it and you'll need to toggle it off and back on.
 
 ## License
 
-MIT
+MIT. Do whatever you want with it.
