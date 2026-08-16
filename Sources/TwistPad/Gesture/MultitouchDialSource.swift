@@ -11,7 +11,7 @@ final class MultitouchDialSource {
     private var handler: Handler?
     private var devices: [MTDeviceRef] = []
     private var deviceHandles: [AnyObject] = []
-    private var isRunning = false
+    private(set) var isRunning = false
     private var hasWakeObserver = false
 
     private var trackedPair: Set<Int32> = []
@@ -26,8 +26,8 @@ final class MultitouchDialSource {
     /// device and frames from the other are ignored until it ends.
     private var gestureDevice: MTDeviceRef?
 
-    private var surfaceWidth: Double = 160
-    private var surfaceHeight: Double = 100
+    private(set) var surfaceWidth: Double = 160
+    private(set) var surfaceHeight: Double = 100
     /// Sensor size per device: a Magic Trackpad is not shaped like a built-in one,
     /// and the angle correction depends on it.
     private var surfaceSizes: [Int: (width: Double, height: Double)] = [:]
@@ -35,6 +35,7 @@ final class MultitouchDialSource {
     private init() {}
 
     var isSupported: Bool { MultitouchSupport.isAvailable }
+    var deviceCount: Int { devices.count }
 
     // MARK: - Lifecycle
 

@@ -278,6 +278,14 @@ final class VolumeController {
                                    UInt32(MemoryLayout<UInt32>.size), &flag)
     }
 
+    var strategyDescription: String {
+        switch strategy {
+        case .master: return "master channel"
+        case .channels(let elements): return "per-channel \(elements)"
+        case .unsupported: return "none available"
+        }
+    }
+
     var deviceName: String {
         guard deviceID != kAudioObjectUnknown else { return "No output device" }
         var addr = AudioObjectPropertyAddress(

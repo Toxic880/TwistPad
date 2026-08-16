@@ -11,7 +11,7 @@ struct SettingsView: View {
                 .tabItem { Label("Dial", systemImage: "dial.medium") }
             AppsTab()
                 .tabItem { Label("Apps", systemImage: "square.grid.2x2") }
-            AboutTab(updateChecker: updateChecker)
+            AboutTab(dial: dial, updateChecker: updateChecker)
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
         .frame(width: 470, height: 560)
@@ -27,6 +27,7 @@ private struct DialTab: View {
     /// Re-read when the window comes forward, so toggling the system setting in
     /// another app is reflected without relaunching.
     @State private var hapticStatus = Haptics.availability
+    @State private var copiedDiagnostics = false
 
     /// How far through a full sweep the current twist has got.
     private var twistProgress: Double {
@@ -76,30 +77,55 @@ private struct DialTab: View {
                     }
                     .pickerStyle(.segmented)
 
+                    // Stays interactive even when haptics cannot fire: this is a
+                    // preference, and greying it out in the ON position both
+                    // reads as "working" and stops anyone changing their mind.
                     Toggle("Haptic click at each step", isOn: $settings.hapticsEnabled)
-                        .disabled(settings.detentCount == 0 || hapticStatus != .working)
+                        .disabled(settings.detentCount == 0)
 
-                    // Haptics fail silently, so say which of the two reasons it
-                    // is rather than leaving a toggle that looks fine and does
-                    // nothing at all.
+                    // Always offered, and deliberately not gated on the detection
+                    // below. Pressing it is ground truth: you either feel five
+                    // clicks or you do not, whatever the cause turns out to be.
+                    Button("Test Haptics") { Haptics.test() }
+                        .disabled(settings.detentCount == 0)
+
                     switch hapticStatus {
                     case .working:
-                        Button("Test Haptics") { Haptics.test() }
-                            .disabled(!settings.hapticsEnabled || settings.detentCount == 0)
+                        EmptyView()
                     case .noHardware:
-                        Label("This trackpad has no haptic engine, so there is "
-                              + "nothing to feel. Everything else still works.",
-                              systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.orange)
-                            .font(.callout)
-                    case .disabledInSystemSettings:
                         VStack(alignment: .leading, spacing: 6) {
-                            Label("Haptic feedback is switched off for your trackpad.",
+                            Label("No haptic engine found on this trackpad, so there "
+                                  + "is probably nothing to feel. Everything else "
+                                  + "still works. Try the button above to be sure.",
                                   systemImage: "exclamationmark.triangle")
                                 .foregroundStyle(.orange)
                                 .font(.callout)
-                            Button("Open Trackpad Settings") { Haptics.openTrackpadSettings() }
+                            Button("Copy Diagnostics") {
+                                Diagnostics.copyToPasteboard(dial: dial)
+                                copiedDiagnostics = true
+                            }
                         }
+                    case .disabledInSystemSettings:
+                        VStack(alignment: .leading, spacing: 6) {
+                            Label("Haptic feedback is switched off for your trackpad, "
+                                  + "so nothing will be felt until it is turned back on.",
+                                  systemImage: "exclamationmark.triangle")
+                                .foregroundStyle(.orange)
+                                .font(.callout)
+                            HStack {
+                                Button("Open Trackpad Settings") { Haptics.openTrackpadSettings() }
+                                Button("Copy Diagnostics") {
+                                    Diagnostics.copyToPasteboard(dial: dial)
+                                    copiedDiagnostics = true
+                                }
+                            }
+                        }
+                    }
+
+                    if copiedDiagnostics {
+                        Text("Copied.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
 
                     Toggle("Show the dial on screen", isOn: $settings.hudEnabled)
@@ -122,6 +148,7 @@ private struct DialTab: View {
             .onReceive(NotificationCenter.default.publisher(
                 for: NSApplication.didBecomeActiveNotification)) { _ in
                 hapticStatus = Haptics.availability
+                if hapticStatus != .working { settings.hapticsEnabled = false }
             }
         }
     }
@@ -266,6 +293,7 @@ private struct AppsTab: View {
 
 private struct AboutTab: View {
     @ObservedObject var settings = Settings.shared
+    @ObservedObject var dial: VolumeDial
     @ObservedObject var updateChecker: UpdateChecker
     @State private var opensAtLogin = LoginItem.isEnabled
 
@@ -347,6 +375,9 @@ private struct AboutTab: View {
             HStack(spacing: 10) {
                 Button("Contact Support") {
                     open("mailto:Support@traluco.com?subject=TwistPad")
+                }
+                Button("Copy Diagnostics") {
+                    Diagnostics.copyToPasteboard(dial: dial)
                 }
                 Button("View on GitHub") {
                     open("https://github.com/Toxic880/TwistPad")

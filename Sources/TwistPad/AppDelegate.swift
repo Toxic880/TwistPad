@@ -50,6 +50,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] _ in self?.statusItem?.refresh() }
             .store(in: &cancellables)
 
+        // A switch that cannot do anything should not be sitting on. Turned off
+        // rather than disabled, so it reads honestly and can still be turned
+        // back on once the trackpad setting is fixed.
+        if settings.hapticsEnabled, Haptics.availability != .working {
+            settings.hapticsEnabled = false
+        }
+
         startGesture()
         scheduleUpdateChecks()
     }
