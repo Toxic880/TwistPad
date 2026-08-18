@@ -9,6 +9,7 @@ final class VolumeDial: ObservableObject, DialRecognizerDelegate, PinchRecognize
     @Published private(set) var isMuted: Bool = false
     @Published private(set) var isEngaged: Bool = false
     /// Live rotation of the in-flight gesture, for the calibration readout.
+    /// Unclamped on purpose: this is measuring the hand, not driving the volume.
     @Published private(set) var liveTwistDegrees: Double = 0
 
     let volumeController = VolumeController()
@@ -20,6 +21,8 @@ final class VolumeDial: ObservableObject, DialRecognizerDelegate, PinchRecognize
 
     private var isSuppressed = false
     private var baseVolume: Float = 0
+    /// Rotation actually driving the volume, held inside the span the 0...1
+    /// range can express.
     private var accumulatedDegrees: Double = 0
     private var currentStepIndex: Int?
     private var cancellables = Set<AnyCancellable>()
@@ -83,8 +86,18 @@ final class VolumeDial: ObservableObject, DialRecognizerDelegate, PinchRecognize
     }
 
     func syncFromSystem() {
-        volumeLevel = volumeController.readVolume() ?? 0
-        isMuted = volumeController.readMute()
+        let level = volumeController.readVolume() ?? 0
+        let muted = volumeController.readMute()
+
+        // Mid-twist, something changing the volume from outside becomes the new
+        // starting point rather than something to argue with. Keeping the old
+        // base would drag the volume straight back on the next frame.
+        if isEngaged {
+            rebase(to: muted ? 0 : level)
+        }
+
+        volumeLevel = level
+        isMuted = muted
     }
 
     // MARK: - DialRecognizerDelegate
@@ -96,14 +109,15 @@ final class VolumeDial: ObservableObject, DialRecognizerDelegate, PinchRecognize
         }
 
         isSuppressed = false
-        // Read live, so the dial respects media keys pressed since last time.
-        baseVolume = volumeController.readVolume() ?? 0
-        if volumeController.readMute() { baseVolume = 0 }
-        accumulatedDegrees = 0
+        // The controller's own figure rather than a fresh device read. Writes are
+        // queued and a Bluetooth device applies them in its own time, so reading
+        // it here mid-flight hands back where the *previous* gesture started, and
+        // the volume drops back there the moment this one moves. It falls through
+        // to a real read once the writes have landed.
+        isMuted = volumeController.readMute()
+        rebase(to: isMuted ? 0 : (volumeController.currentVolume() ?? volumeLevel))
+        volumeLevel = baseVolume
         liveTwistDegrees = 0
-        currentStepIndex = settings.detentCount > 0
-            ? Int((Double(baseVolume) * Double(settings.detentCount)).rounded())
-            : nil
 
         isEngaged = true
         if settings.blockScrollDuringGestures { InputSuppressor.shared.isSuppressing = true }
@@ -113,12 +127,22 @@ final class VolumeDial: ObservableObject, DialRecognizerDelegate, PinchRecognize
     func dial(_ recognizer: DialRecognizer, didRotateBy degrees: Double) {
         guard !isSuppressed else { return }
 
-        accumulatedDegrees += degrees
-        liveTwistDegrees = accumulatedDegrees
+        liveTwistDegrees += degrees
 
         // Rotation is positive counter-clockwise; a knob gets louder clockwise.
         let direction: Double = settings.invertDirection ? 1 : -1
         let sweep = max(settings.degreesForFullSweep, 10)
+
+        // Anti-windup. The volume is clamped to 0...1 but the rotation driving it
+        // was not, so twisting past either end banked degrees that had to be
+        // unwound before anything moved again. Past the top of a 70° sweep, a
+        // long twist could need most of a turn back before the volume answered —
+        // which reads exactly as the dial being stuck.
+        accumulatedDegrees = Self.clampedRotation(accumulatedDegrees + degrees,
+                                                  base: baseVolume,
+                                                  direction: direction,
+                                                  sweep: sweep)
+
         let target = min(max(baseVolume + Float(direction * accumulatedDegrees / sweep), 0), 1)
 
         if settings.detentCount > 0 {
@@ -157,6 +181,32 @@ final class VolumeDial: ObservableObject, DialRecognizerDelegate, PinchRecognize
     }
 
     // MARK: - Applying the volume
+
+    /// Starts the twist over from a known level, keeping the detent index in
+    /// step so the next click lands where the dial actually is.
+    private func rebase(to level: Float) {
+        baseVolume = min(max(level, 0), 1)
+        accumulatedDegrees = 0
+        currentStepIndex = settings.detentCount > 0
+            ? Int((Double(baseVolume) * Double(settings.detentCount)).rounded())
+            : nil
+    }
+
+    /// Holds the accumulator inside the span `base` can be moved across, so
+    /// reversing takes effect on the first degree back instead of after the
+    /// overshoot has been paid off.
+    ///
+    /// `direction` is +1 or -1, and squares away, so the same expression both
+    /// converts to a signed volume offset and converts back.
+    static func clampedRotation(_ degrees: Double,
+                                base: Float,
+                                direction: Double,
+                                sweep: Double) -> Double {
+        let signed = direction * degrees
+        let lower = -Double(base) * sweep
+        let upper = Double(1 - base) * sweep
+        return direction * min(max(signed, lower), upper)
+    }
 
     private func applyDetented(_ target: Float) {
         let steps = settings.detentCount

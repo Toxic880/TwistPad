@@ -26,6 +26,11 @@ final class VolumeController {
                                            qos: .userInteractive)
     private let lock = NSLock()
     private var pendingWrite: Float?
+    /// The value `performWrite` is busy sending, if any.
+    private var inFlightWrite: Float?
+    /// The last value that finished writing, and when.
+    private var lastCommandedValue: Float?
+    private var lastWriteFinished: TimeInterval = 0
     private var isDraining = false
 
     // CoreAudio's change notification arrives after the write lands, so an
@@ -33,8 +38,17 @@ final class VolumeController {
     private var lastSelfWrite: TimeInterval = 0
     private let selfWriteGrace: TimeInterval = 0.2
 
+    /// How long the last value written stays authoritative over a fresh read.
+    /// Long enough to cover a device that has not caught up yet, short enough
+    /// that a media key pressed straight afterwards still wins.
+    private let settleGrace: TimeInterval = 0.3
+
     private var deviceListenerBlock: AudioObjectPropertyListenerBlock?
     private var volumeListenerBlock: AudioObjectPropertyListenerBlock?
+    private var muteListenerBlock: AudioObjectPropertyListenerBlock?
+    /// Exactly what was registered, so the same addresses come back off again.
+    private var observedVolumeElements: [UInt32] = []
+    private var observesMute = false
 
     var isAvailable: Bool {
         if case .unsupported = strategy { return false }
@@ -83,6 +97,14 @@ final class VolumeController {
     private func refreshDevice() {
         removeVolumeListener()
 
+        // Nothing cached survives a device change: a queued write belongs to the
+        // old device's scale, and the level it was heading for says nothing about
+        // the new one.
+        lock.lock()
+        pendingWrite = nil
+        lastCommandedValue = nil
+        lock.unlock()
+
         var dev = AudioDeviceID(kAudioObjectUnknown)
         var size = UInt32(MemoryLayout<AudioDeviceID>.size)
         let err = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),
@@ -123,47 +145,112 @@ final class VolumeController {
     }
 
     private static func isSettable(_ device: AudioDeviceID, element: UInt32) -> Bool {
-        var addr = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyVolumeScalar,
-            mScope: kAudioDevicePropertyScopeOutput,
-            mElement: element)
+        var addr = volumeAddress(element: element)
         guard AudioObjectHasProperty(device, &addr) else { return false }
         var settable: DarwinBoolean = false
         guard AudioObjectIsPropertySettable(device, &addr, &settable) == noErr else { return false }
         return settable.boolValue
     }
 
-    // MARK: - External change notifications
+    // MARK: - Addresses
 
-    private var volumeAddress: AudioObjectPropertyAddress {
+    private static func volumeAddress(element: UInt32) -> AudioObjectPropertyAddress {
         AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyVolumeScalar,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: element)
+    }
+
+    private static var muteAddress: AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyMute,
             mScope: kAudioDevicePropertyScopeOutput,
             mElement: kAudioObjectPropertyElementMain)
     }
 
+    /// The elements this device's volume actually lives on.
+    private var volumeElements: [UInt32] {
+        switch strategy {
+        case .master: return [kAudioObjectPropertyElementMain]
+        case .channels(let ch): return ch
+        case .unsupported: return []
+        }
+    }
+
+    // MARK: - External change notifications
+
     private func installVolumeListener() {
         guard deviceID != kAudioObjectUnknown else { return }
-        var addr = volumeAddress
-        guard AudioObjectHasProperty(deviceID, &addr) else { return }
 
+        // Every element the volume lives on, not just the main one. A device with
+        // no master control reports its changes per channel, so listening only on
+        // main means media keys and other apps move the volume without TwistPad
+        // ever hearing about it.
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            guard let self else { return }
-            self.lock.lock()
-            let elapsed = ProcessInfo.processInfo.systemUptime - self.lastSelfWrite
-            self.lock.unlock()
-            guard elapsed > self.selfWriteGrace else { return }
+            guard let self, !self.isEchoOfOwnWrite() else { return }
             self.onVolumeChangedExternally?()
         }
         volumeListenerBlock = block
-        AudioObjectAddPropertyListenerBlock(deviceID, &addr, DispatchQueue.main, block)
+
+        for element in volumeElements {
+            var addr = Self.volumeAddress(element: element)
+            guard AudioObjectHasProperty(deviceID, &addr) else { continue }
+            AudioObjectAddPropertyListenerBlock(deviceID, &addr, DispatchQueue.main, block)
+            observedVolumeElements.append(element)
+        }
+
+        // Mute is a separate property and used to go unwatched entirely, so
+        // muting with F10 left the menu bar icon and the HUD showing sound.
+        var mute = Self.muteAddress
+        if AudioObjectHasProperty(deviceID, &mute) {
+            let muteBlock: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+                guard let self, !self.isEchoOfOwnWrite() else { return }
+                self.onVolumeChangedExternally?()
+            }
+            muteListenerBlock = muteBlock
+            AudioObjectAddPropertyListenerBlock(deviceID, &mute, DispatchQueue.main, muteBlock)
+            observesMute = true
+        }
     }
 
     private func removeVolumeListener() {
-        guard let block = volumeListenerBlock, deviceID != kAudioObjectUnknown else { return }
-        var addr = volumeAddress
-        AudioObjectRemovePropertyListenerBlock(deviceID, &addr, DispatchQueue.main, block)
+        guard deviceID != kAudioObjectUnknown else {
+            observedVolumeElements = []
+            observesMute = false
+            volumeListenerBlock = nil
+            muteListenerBlock = nil
+            return
+        }
+
+        if let block = volumeListenerBlock {
+            for element in observedVolumeElements {
+                var addr = Self.volumeAddress(element: element)
+                AudioObjectRemovePropertyListenerBlock(deviceID, &addr,
+                                                       DispatchQueue.main, block)
+            }
+        }
+        if let block = muteListenerBlock, observesMute {
+            var mute = Self.muteAddress
+            AudioObjectRemovePropertyListenerBlock(deviceID, &mute, DispatchQueue.main, block)
+        }
+        observedVolumeElements = []
+        observesMute = false
         volumeListenerBlock = nil
+        muteListenerBlock = nil
+    }
+
+    /// Whether a notification is just our own write coming back. Also drops the
+    /// cached value when it is not, so a media key immediately takes over from
+    /// what TwistPad last wrote.
+    private func isEchoOfOwnWrite() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let elapsed = ProcessInfo.processInfo.systemUptime - lastSelfWrite
+        if elapsed > selfWriteGrace {
+            lastCommandedValue = nil
+            return false
+        }
+        return true
     }
 
     // MARK: - Reading
@@ -171,20 +258,13 @@ final class VolumeController {
     func readVolume() -> Float? {
         guard deviceID != kAudioObjectUnknown else { return nil }
 
-        let elements: [UInt32]
-        switch strategy {
-        case .master: elements = [kAudioObjectPropertyElementMain]
-        case .channels(let ch): elements = ch
-        case .unsupported: return nil
-        }
+        let elements = volumeElements
+        guard !elements.isEmpty else { return nil }
 
         var total: Float = 0
         var count = 0
         for element in elements {
-            var addr = AudioObjectPropertyAddress(
-                mSelector: kAudioDevicePropertyVolumeScalar,
-                mScope: kAudioDevicePropertyScopeOutput,
-                mElement: element)
+            var addr = Self.volumeAddress(element: element)
             var value: Float32 = 0
             var size = UInt32(MemoryLayout<Float32>.size)
             if AudioObjectGetPropertyData(deviceID, &addr, 0, nil, &size, &value) == noErr {
@@ -196,12 +276,32 @@ final class VolumeController {
         return min(max(total / Float(count), 0), 1)
     }
 
+    /// Where the volume is heading, which is not always where it is.
+    ///
+    /// Writes are queued and the device applies them in its own time, so asking
+    /// the hardware mid-flight hands back whatever it still holds — for Bluetooth
+    /// and AirPlay, milliseconds behind. Starting a second twist off that stale
+    /// reading drags the volume back to where the previous one began, which is
+    /// the "it won't go up until I twist down and up again" stall. Falls through
+    /// to a real read once the writes have settled, so a media key pressed in
+    /// between is still respected.
+    func currentVolume() -> Float? {
+        lock.lock()
+        if let queued = pendingWrite ?? inFlightWrite {
+            lock.unlock()
+            return queued
+        }
+        let recent = lastCommandedValue
+        let sinceWrite = ProcessInfo.processInfo.systemUptime - lastWriteFinished
+        lock.unlock()
+
+        if let recent, sinceWrite < settleGrace { return recent }
+        return readVolume()
+    }
+
     func readMute() -> Bool {
         guard deviceID != kAudioObjectUnknown else { return false }
-        var addr = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyMute,
-            mScope: kAudioDevicePropertyScopeOutput,
-            mElement: kAudioObjectPropertyElementMain)
+        var addr = Self.muteAddress
         guard AudioObjectHasProperty(deviceID, &addr) else { return false }
         var muted: UInt32 = 0
         var size = UInt32(MemoryLayout<UInt32>.size)
@@ -230,34 +330,37 @@ final class VolumeController {
         while true {
             lock.lock()
             guard let value = pendingWrite else {
+                inFlightWrite = nil
                 isDraining = false
                 lock.unlock()
                 return
             }
             pendingWrite = nil
+            inFlightWrite = value
             lastSelfWrite = ProcessInfo.processInfo.systemUptime
             lock.unlock()
 
             performWrite(value)
+
+            // Stamped again on the way out. The write itself can block for
+            // milliseconds on a Bluetooth device and CoreAudio's echo follows
+            // that, not the moment the call went in — stamping only on entry
+            // lets a slow write's own echo look like somebody else's change.
+            lock.lock()
+            let now = ProcessInfo.processInfo.systemUptime
+            lastSelfWrite = now
+            lastWriteFinished = now
+            lastCommandedValue = value
+            lock.unlock()
         }
     }
 
     private func performWrite(_ value: Float) {
         guard deviceID != kAudioObjectUnknown else { return }
 
-        let elements: [UInt32]
-        switch strategy {
-        case .master: elements = [kAudioObjectPropertyElementMain]
-        case .channels(let ch): elements = ch
-        case .unsupported: return
-        }
-
         var scalar = Float32(value)
-        for element in elements {
-            var addr = AudioObjectPropertyAddress(
-                mSelector: kAudioDevicePropertyVolumeScalar,
-                mScope: kAudioDevicePropertyScopeOutput,
-                mElement: element)
+        for element in volumeElements {
+            var addr = Self.volumeAddress(element: element)
             AudioObjectSetPropertyData(deviceID, &addr, 0, nil,
                                        UInt32(MemoryLayout<Float32>.size), &scalar)
         }
@@ -265,14 +368,17 @@ final class VolumeController {
 
     func setMute(_ muted: Bool) {
         guard deviceID != kAudioObjectUnknown else { return }
-        var addr = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyMute,
-            mScope: kAudioDevicePropertyScopeOutput,
-            mElement: kAudioObjectPropertyElementMain)
+        var addr = Self.muteAddress
         guard AudioObjectHasProperty(deviceID, &addr) else { return }
         var settable: DarwinBoolean = false
         guard AudioObjectIsPropertySettable(deviceID, &addr, &settable) == noErr,
               settable.boolValue else { return }
+
+        // Stamped so the mute listener recognises the echo as ours.
+        lock.lock()
+        lastSelfWrite = ProcessInfo.processInfo.systemUptime
+        lock.unlock()
+
         var flag: UInt32 = muted ? 1 : 0
         AudioObjectSetPropertyData(deviceID, &addr, 0, nil,
                                    UInt32(MemoryLayout<UInt32>.size), &flag)
