@@ -31,6 +31,9 @@ final class MultitouchDialSource {
     private var previousBearings: [Int32: Double] = [:]
     private var previousSpread: Double?
     private var centroidAtTouchdown: (x: Double, y: Double)?
+    /// Where each contact landed, so the movement can be split into the hand
+    /// travelling and the fingers turning against each other.
+    private var positionsAtTouchdown: [Int32: (x: Double, y: Double)] = [:]
     private var maxCentroidDrift: Double = 0
     private var initialSeparation: Double = 0
 
@@ -125,6 +128,12 @@ final class MultitouchDialSource {
 
     // MARK: - Frame processing
 
+    private struct Contact {
+        let id: Int32
+        let x: Double
+        let y: Double
+    }
+
     fileprivate func process(touches: [MTTouch], device: MTDeviceRef?) {
         // A gesture owns its trackpad until it finishes.
         if let gestureDevice, let device, gestureDevice != device { return }
@@ -155,9 +164,9 @@ final class MultitouchDialSource {
         // reads about 1.6x larger stacked vertically than side by side. Gates
         // built on normalized values therefore leak vertical two-finger scrolls.
         let points = active.map { touch in
-            (id: touch.pathIndex,
-             x: Double(touch.normalized.position.x) * surfaceWidth,
-             y: Double(touch.normalized.position.y) * surfaceHeight)
+            Contact(id: touch.pathIndex,
+                    x: Double(touch.normalized.position.x) * surfaceWidth,
+                    y: Double(touch.normalized.position.y) * surfaceHeight)
         }
         let centroid = (x: points.map(\.x).reduce(0, +) / Double(count),
                         y: points.map(\.y).reduce(0, +) / Double(count))
@@ -174,27 +183,46 @@ final class MultitouchDialSource {
         let bearings = Dictionary(uniqueKeysWithValues: points.map {
             ($0.id, atan2($0.y - centroid.y, $0.x - centroid.x) * 180 / .pi)
         })
-        let lineAngle: Double? = count == 2 ? {
-            let sorted = points.sorted { $0.id < $1.id }
-            return atan2(sorted[1].y - sorted[0].y, sorted[1].x - sorted[0].x) * 180 / .pi
-        }() : nil
+        let lineAngle = undirectedLineAngle(of: points)
 
         if ids != trackedIDs {
+            // A contact that flickers — light pressure, or a finger near the edge
+            // of the sensor — comes back with a fresh pathIndex. Tearing the
+            // gesture down for that drops an engaged dial mid-twist, and the
+            // touch-down that immediately follows re-reads the volume, which is
+            // how a long twist could appear to stall and jump backwards. When the
+            // hand is plainly still the same one, rebase on the new set instead.
+            let isReseat = !trackedIDs.isEmpty
+                && count == gestureContactCount
+                && !ids.isDisjoint(with: trackedIDs)
+            if isReseat {
+                GestureLog.record("reseat: contacts re-indexed, gesture kept")
+                // Drift is deliberately carried over. It is the budget a touch
+                // spends proving it is a twist, and a flickering contact must
+                // not hand a scroll a fresh one.
+                rebase(on: points, centroid: centroid, bearings: bearings,
+                       lineAngle: lineAngle, separation: separation, ids: ids,
+                       resetDrift: false)
+                // Zero delta: the pairing changed, so this frame's angle is not
+                // comparable with the last one.
+                emit(delta: 0, translation: 0, rotationTravel: 0,
+                     spreadDelta: 0, phase: .changed)
+                return
+            }
+
             resetGesture(emitEnd: true)
             gestureDevice = device
-            trackedIDs = ids
             gestureContactCount = count
-            previousLineAngle = lineAngle
-            previousBearings = bearings
-            previousSpread = separation
-            centroidAtTouchdown = centroid
-            maxCentroidDrift = 0
             initialSeparation = separation
+            rebase(on: points, centroid: centroid, bearings: bearings,
+                   lineAngle: lineAngle, separation: separation, ids: ids,
+                   resetDrift: true)
             GestureLog.record(String(
                 format: "start: contacts=%d sep=%.1fmm palmsIgnored=%d sizes=[%@]",
                 count, separation, palms,
                 active.map { String(format: "%.2f", $0.zTotal) }.joined(separator: ", ")))
-            emit(delta: 0, spreadDelta: 0, phase: .began)
+            emit(delta: 0, translation: 0, rotationTravel: 0,
+                 spreadDelta: 0, phase: .began)
             return
         }
 
@@ -232,22 +260,75 @@ final class MultitouchDialSource {
             delta = total / Double(counted)
         }
 
+        // Split the movement in two. The centroid's displacement is the hand
+        // travelling; whatever is left over once that is subtracted is the
+        // fingers turning against each other. A scroll is almost entirely the
+        // first, a twist almost entirely the second, and comparing them in
+        // millimetres works the same at any stance width.
+        var translation = 0.0
+        var rotationTravel = 0.0
         if let origin = centroidAtTouchdown {
-            let driftX = centroid.x - origin.x
-            let driftY = centroid.y - origin.y
-            maxCentroidDrift = max(maxCentroidDrift,
-                                   (driftX * driftX + driftY * driftY).squareRoot())
+            let travelX = centroid.x - origin.x
+            let travelY = centroid.y - origin.y
+            translation = (travelX * travelX + travelY * travelY).squareRoot()
+            maxCentroidDrift = max(maxCentroidDrift, translation)
+
+            var total = 0.0
+            var counted = 0
+            for point in points {
+                guard let start = positionsAtTouchdown[point.id] else { continue }
+                let residualX = (point.x - start.x) - travelX
+                let residualY = (point.y - start.y) - travelY
+                total += (residualX * residualX + residualY * residualY).squareRoot()
+                counted += 1
+            }
+            if counted > 0 { rotationTravel = total / Double(counted) }
         }
 
         let spreadDelta = separation - (previousSpread ?? separation)
         previousSpread = separation
 
-        emit(delta: delta, spreadDelta: spreadDelta, phase: .changed)
+        emit(delta: delta, translation: translation, rotationTravel: rotationTravel,
+             spreadDelta: spreadDelta, phase: .changed)
     }
 
-    private func emit(delta: Double, spreadDelta: Double, phase: GesturePhase) {
+    /// Orientation of the line between two contacts. Only meaningful modulo
+    /// 180: the pair defines a line, not an arrow.
+    private func undirectedLineAngle(of points: [Contact]) -> Double? {
+        guard points.count == 2 else { return nil }
+        let sorted = points.sorted { $0.id < $1.id }
+        return atan2(sorted[1].y - sorted[0].y, sorted[1].x - sorted[0].x) * 180 / .pi
+    }
+
+    /// Makes the current frame the reference the next ones are measured against.
+    /// Used both for a fresh touch-down and for a contact that came back with a
+    /// new index part-way through.
+    private func rebase(on points: [Contact],
+                        centroid: (x: Double, y: Double),
+                        bearings: [Int32: Double],
+                        lineAngle: Double?,
+                        separation: Double,
+                        ids: Set<Int32>,
+                        resetDrift: Bool) {
+        trackedIDs = ids
+        previousLineAngle = lineAngle
+        previousBearings = bearings
+        previousSpread = separation
+        centroidAtTouchdown = centroid
+        positionsAtTouchdown = Dictionary(uniqueKeysWithValues:
+            points.map { ($0.id, (x: $0.x, y: $0.y)) })
+        if resetDrift { maxCentroidDrift = 0 }
+    }
+
+    private func emit(delta: Double,
+                      translation: Double,
+                      rotationTravel: Double,
+                      spreadDelta: Double,
+                      phase: GesturePhase) {
         handler?(TwistSample(deltaDegrees: delta,
                              centroidDrift: maxCentroidDrift,
+                             translationMM: translation,
+                             rotationTravelMM: rotationTravel,
                              initialSeparation: initialSeparation,
                              spreadDeltaMM: spreadDelta,
                              contactCount: gestureContactCount,
@@ -261,12 +342,14 @@ final class MultitouchDialSource {
         previousBearings = [:]
         previousSpread = nil
         centroidAtTouchdown = nil
+        positionsAtTouchdown = [:]
         gestureDevice = nil
 
         // Ends with the count the gesture actually had, so going from two
         // fingers to three closes the volume gesture rather than the track one.
         if emitEnd && hadGesture {
-            emit(delta: 0, spreadDelta: 0, phase: .ended)
+            emit(delta: 0, translation: 0, rotationTravel: 0,
+                 spreadDelta: 0, phase: .ended)
         }
         gestureContactCount = 0
         maxCentroidDrift = 0
