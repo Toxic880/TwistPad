@@ -41,6 +41,7 @@ enum Diagnostics {
         lines.append("  output device            : \(dial.outputDeviceName)")
         lines.append("  volume control           : \(dial.volumeController.strategyDescription)")
         lines.append(String(format: "  current level            : %.0f%%", dial.volumeLevel * 100))
+        lines.append("  muted                    : \(yesNo(dial.isMuted))")
         lines.append("")
 
         lines.append("Gesture settings")
@@ -51,6 +52,8 @@ enum Diagnostics {
                             settings.activationThreshold))
         lines.append("  detents                  : \(settings.detentCount == 0 ? "smooth" : String(settings.detentCount))")
         lines.append("  reversed                 : \(yesNo(settings.invertDirection))")
+        lines.append("  block scroll             : \(yesNo(settings.blockScrollDuringGestures))")
+        lines.append("  gesture log              : \(yesNo(GestureLog.isEnabled))")
         lines.append("")
 
         lines.append("Track control")

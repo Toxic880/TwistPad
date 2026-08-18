@@ -130,12 +130,16 @@ final class PinchRecognizer {
     private func armWatchdog() {
         lastEventTime = ProcessInfo.processInfo.systemUptime
         guard watchdog == nil else { return }
-        watchdog = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
             guard let self else { return }
             if ProcessInfo.processInfo.systemUptime - self.lastEventTime > self.idleTimeout {
                 self.reset()
             }
         }
+        // Common modes: a default-mode timer stops while a menu is open, which
+        // would strand the gesture holding input suppression open.
+        RunLoop.main.add(timer, forMode: .common)
+        watchdog = timer
     }
 
     private func reset() {

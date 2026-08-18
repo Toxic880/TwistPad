@@ -36,11 +36,16 @@ final class InputSuppressor {
             forceOffTimer = nil
             guard newValue else { return }
 
-            forceOffTimer = Timer.scheduledTimer(withTimeInterval: maximumSuppression,
-                                                 repeats: false) { _ in
+            // Common modes, not the default one. A default-mode timer is
+            // parked while a menu is open or a window is being resized, which
+            // is exactly when a tap left swallowing input would be hardest to
+            // escape from — the watchdog has to fire there most of all.
+            let timer = Timer(timeInterval: maximumSuppression, repeats: false) { _ in
                 NSLog("TwistPad: suppression watchdog fired; releasing input")
                 suppressionActive = false
             }
+            RunLoop.main.add(timer, forMode: .common)
+            forceOffTimer = timer
         }
     }
 
@@ -113,7 +118,13 @@ private let suppressorCallback: CGEventTapCallBack = { _, type, event, _ in
         return Unmanaged.passUnretained(event)
     }
     if suppressionActive {
-        return nil
+        // The gesture events are all trackpad by definition. Scroll is not: a
+        // mouse wheel comes through the same tap as discrete steps, and
+        // swallowing those would leave a plugged-in mouse dead for the length
+        // of every twist.
+        let isTrackpad = type != .scrollWheel
+            || event.getIntegerValueField(.scrollWheelEventIsContinuous) != 0
+        if isTrackpad { return nil }
     }
     return Unmanaged.passUnretained(event)
 }

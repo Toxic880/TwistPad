@@ -45,7 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // No scheduler hop: the dial is meant to move with your fingers.
         dial.$volumeLevel
             .sink { [weak self] level in
-                guard let self else { return }
+                guard let self, self.settings.hudEnabled else { return }
                 self.hud.update(level: level,
                                 detents: self.settings.detentCount,
                                 isMuted: self.dial.isMuted)
@@ -83,6 +83,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
         true
+    }
+
+    /// There is no window to bring back, so opening TwistPad again while it is
+    /// already running used to do nothing at all — which reads as a broken app.
+    /// Show the settings instead, since that is what someone is looking for.
+    func applicationShouldHandleReopen(_ sender: NSApplication,
+                                       hasVisibleWindows: Bool) -> Bool {
+        showSettings()
+        return true
     }
 
     // MARK: - Startup

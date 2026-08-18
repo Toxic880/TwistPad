@@ -416,6 +416,7 @@ private struct AboutTab: View {
     @ObservedObject var dial: VolumeDial
     @ObservedObject var updateChecker: UpdateChecker
     @State private var opensAtLogin = LoginItem.isEnabled
+    @State private var logsGestures = GestureLog.isEnabled
 
     private var version: String {
         let info = Bundle.main.infoDictionary
@@ -488,9 +489,25 @@ private struct AboutTab: View {
                         opensAtLogin = LoginItem.isEnabled
                     }
                     .disabled(!LoginItem.isAvailable)
+
+                // "It thought my scroll was a twist" cannot be answered without
+                // the numbers behind that decision, and asking someone to write
+                // a hidden default and tail a file is asking too much.
+                Toggle("Log gesture decisions", isOn: $logsGestures)
+                    .onChange(of: logsGestures) { _, newValue in
+                        GestureLog.isEnabled = newValue
+                    }
+                    .help("Records why each twist was taken or ignored. Useful "
+                          + "to attach if a gesture is firing when it shouldn't.")
             }
             .toggleStyle(.switch)
             .frame(maxWidth: 300, alignment: .leading)
+
+            if logsGestures {
+                Button("Show Gesture Log") { GestureLog.revealInFinder() }
+                    .buttonStyle(.link)
+                    .font(.caption)
+            }
 
             HStack(spacing: 10) {
                 Button("Contact Support") {
